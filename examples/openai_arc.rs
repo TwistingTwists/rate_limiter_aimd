@@ -100,16 +100,21 @@ async fn main() -> Result<(), CrateError> {
     // 2. Define the retry logic (this informs the adaptive controller)
     let retry_logic = DefaultReqwestRetryLogic;
 
-    // 3. Configure adaptive concurrency settings
+    // Configure adaptive concurrency settings
     let adaptive_settings = AdaptiveConcurrencySettings::builder()
         .initial_concurrency(2)    // Start with 2 concurrent requests allowed
         .max_concurrency_limit(10) // Cap the max concurrent requests to 10
         .build();
+    info!(
+        "Initial concurrency: {}, Max concurrency: {}",
+        adaptive_settings.get_initial_concurrency(),
+        adaptive_settings.get_max_concurrency_limit()
+    );
     // Other settings like ewma_alpha, decrease_ratio, etc., use defaults
 
     // 4. Wrap the service with AdaptiveConcurrencyLimit
     // The type annotation for the service is long, often inferred or aliased
-    let mut adaptive_openai_client: AdaptiveConcurrencyLimit<ReqwestService, DefaultReqwestRetryLogic> =
+    let adaptive_openai_client: AdaptiveConcurrencyLimit<ReqwestService, DefaultReqwestRetryLogic> =
         AdaptiveConcurrencyLimit::new(
             reqwest_service,
             retry_logic,
@@ -125,6 +130,7 @@ async fn main() -> Result<(), CrateError> {
     );
 
 
+    // Create a larger set of prompts to thoroughly test the concurrency limits
     let prompts = vec![
         "Tell me a joke about a programmer.",
         "What is the capital of France?",
@@ -139,8 +145,22 @@ async fn main() -> Result<(), CrateError> {
         "What is the airspeed velocity of an unladen swallow?",
         "Tell me about the future of AI.",
         "Explain the concept of blockchain.",
+        "India Since independence, how has the constitution of india evolved over the years? - 500 words answer",
         "How does photosynthesis work?",
         "List three famous painters and their most known work.",
+        "Describe the theory of relativity in simple terms.",
+        "What is the difference between artificial intelligence and machine learning?",
+        "Explain the concept of cryptocurrency.",
+        "Write a haiku about springtime.",
+        "What is the largest planet in our solar system?",
+        "Tell me about the history of the internet.",
+        "What is the difference between a comet and an asteroid?",
+        "Explain how a quantum computer works.",
+        "What is the significance of the Turing Test?",
+        "Describe the process of photosynthesis.",
+        "What is the difference between a virus and a bacteria?",
+        "Brahmos missile description please.",
+        "Indus water treaty description, 30 words.",
     ];
 
     let mut tasks = Vec::new();
