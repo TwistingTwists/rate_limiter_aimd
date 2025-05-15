@@ -18,9 +18,10 @@ use tower::ServiceExt; // For .ready() and .call()
 use tracing::{error, info, warn, Level}; // Added warn and Level
 use tracing_subscriber::FmtSubscriber;
 
-const OPENAI_API_BASE_URL: &str = "https://api.kluster.ai/v1"; // Corrected typical OpenAI URL
-// Using a public chat completions endpoint for this example
+// modify these if you want to test with different models
+const OPENAI_API_BASE_URL: &str = "https://api.kluster.ai/v1";  
 const COMPLETIONS_ENDPOINT: &str = "/chat/completions";
+const MODEL: &str = "klusterai/Meta-Llama-3.1-8B-Instruct-Turbo";
 
 // Simplified OpenAI request structure
 #[derive(Serialize, Debug)]
@@ -57,7 +58,7 @@ fn build_openai_request(
     prompt: &str,
 ) -> Result<Request<Option<reqwest::Body>>, CrateError> {
     let request_payload = OpenAiChatRequest {
-        model: "klusterai/Meta-Llama-3.1-8B-Instruct-Turbo".to_string(), // Or another model
+        model: MODEL.to_string(), // Or another model
         messages: vec![Message {
             role: "user".to_string(),
             content: prompt.to_string(),

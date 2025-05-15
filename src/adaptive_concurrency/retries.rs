@@ -368,3 +368,198 @@ impl Iterator for ExponentialBackoff {
         Some(duration)
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use std::{fmt, time::Duration};
+
+    use tokio::time;
+    use tokio_test::{assert_pending, assert_ready_err, assert_ready_ok, task};
+    use tower::retry::RetryLayer;
+    use tower_test::{assert_request_eq, mock};
+
+    use super::*;
+    // use crate::test_util::trace_init;
+
+    #[tokio::test]
+    async fn service_error_retry() {
+        // trace_init();
+
+        time::pause();
+
+        let policy = FibonacciRetryPolicy::new(
+            5,
+            Duration::from_secs(1),
+            Duration::from_secs(10),
+            SvcRetryLogic,
+            JitterMode::None,
+        );
+
+        let (mut svc, mut handle) = mock::spawn_layer(RetryLayer::new(policy));
+
+        assert_ready_ok!(svc.poll_ready());
+
+        let fut = svc.call("hello");
+        let mut fut = task::spawn(fut);
+
+        assert_request_eq!(handle, "hello").send_error(Error(true));
+
+        assert_pending!(fut.poll());
+
+        time::advance(Duration::from_secs(2)).await;
+        assert_pending!(fut.poll());
+
+        assert_request_eq!(handle, "hello").send_response("world");
+        assert_eq!(fut.await.unwrap(), "world");
+    }
+
+    #[tokio::test]
+    async fn service_error_no_retry() {
+        // trace_init();
+
+        let policy = FibonacciRetryPolicy::new(
+            5,
+            Duration::from_secs(1),
+            Duration::from_secs(10),
+            SvcRetryLogic,
+            JitterMode::None,
+        );
+
+        let (mut svc, mut handle) = mock::spawn_layer(RetryLayer::new(policy));
+
+        assert_ready_ok!(svc.poll_ready());
+
+        let mut fut = task::spawn(svc.call("hello"));
+        assert_request_eq!(handle, "hello").send_error(Error(false));
+        assert_ready_err!(fut.poll());
+    }
+
+    #[tokio::test]
+    async fn timeout_error() {
+        // trace_init();
+
+        time::pause();
+
+        let policy = FibonacciRetryPolicy::new(
+            5,
+            Duration::from_secs(1),
+            Duration::from_secs(10),
+            SvcRetryLogic,
+            JitterMode::None,
+        );
+
+        let (mut svc, mut handle) = mock::spawn_layer(RetryLayer::new(policy));
+
+        assert_ready_ok!(svc.poll_ready());
+
+        let mut fut = task::spawn(svc.call("hello"));
+        assert_request_eq!(handle, "hello").send_error(Elapsed::new());
+        assert_pending!(fut.poll());
+
+        time::advance(Duration::from_secs(2)).await;
+        assert_pending!(fut.poll());
+
+        assert_request_eq!(handle, "hello").send_response("world");
+        assert_eq!(fut.await.unwrap(), "world");
+    }
+
+    #[test]
+    fn backoff_grows_to_max() {
+        let mut policy = FibonacciRetryPolicy::new(
+            10,
+            Duration::from_secs(1),
+            Duration::from_secs(10),
+            SvcRetryLogic,
+            JitterMode::None,
+        );
+        assert_eq!(Duration::from_secs(1), policy.backoff());
+
+        policy = policy.advance();
+        assert_eq!(Duration::from_secs(1), policy.backoff());
+
+        policy = policy.advance();
+        assert_eq!(Duration::from_secs(2), policy.backoff());
+
+        policy = policy.advance();
+        assert_eq!(Duration::from_secs(3), policy.backoff());
+
+        policy = policy.advance();
+        assert_eq!(Duration::from_secs(5), policy.backoff());
+
+        policy = policy.advance();
+        assert_eq!(Duration::from_secs(8), policy.backoff());
+
+        policy = policy.advance();
+        assert_eq!(Duration::from_secs(10), policy.backoff());
+
+        policy = policy.advance();
+        assert_eq!(Duration::from_secs(10), policy.backoff());
+    }
+
+    #[test]
+    fn backoff_grows_to_max_with_jitter() {
+        let max_duration = Duration::from_secs(10);
+        let mut policy = FibonacciRetryPolicy::new(
+            10,
+            Duration::from_secs(1),
+            max_duration,
+            SvcRetryLogic,
+            JitterMode::Full,
+        );
+
+        let expected_fib = [1, 1, 2, 3, 5, 8];
+
+        for (i, &exp_fib_secs) in expected_fib.iter().enumerate() {
+            let backoff = policy.backoff();
+            let upper_bound = Duration::from_secs(exp_fib_secs);
+
+            // Check if the backoff is within the expected range, considering the jitter
+            assert!(
+                !backoff.is_zero() && backoff <= upper_bound,
+                "Attempt {}: Expected backoff to be within 0 and {:?}, got {:?}",
+                i + 1,
+                upper_bound,
+                backoff
+            );
+
+            policy = policy.advance();
+        }
+
+        // Once the max backoff is reached, it should not exceed the max backoff.
+        for _ in 0..4 {
+            let backoff = policy.backoff();
+            assert!(
+                !backoff.is_zero() && backoff <= max_duration,
+                "Expected backoff to not exceed {:?}, got {:?}",
+                max_duration,
+                backoff
+            );
+
+            policy = policy.advance();
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SvcRetryLogic;
+
+    impl RetryLogic for SvcRetryLogic {
+        type Error = Error;
+        type Response = &'static str;
+
+        fn is_retriable_error(&self, error: &Self::Error) -> bool {
+            error.0
+        }
+    }
+
+    #[derive(Debug)]
+    struct Error(bool);
+
+    impl fmt::Display for Error {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "error")
+        }
+    }
+
+    impl std::error::Error for Error {}
+}
