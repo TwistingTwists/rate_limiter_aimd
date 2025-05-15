@@ -1275,7 +1275,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rate_arc"
+name = "rate_limiter_aimd"
 version = "0.1.0"
 dependencies = [
  "bon",

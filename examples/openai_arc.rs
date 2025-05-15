@@ -1,5 +1,5 @@
 // examples/openai_adaptive_client.rs
-use rate_arc::{ // Replace with your actual crate name if different
+use rate_limiter_aimd::{ // Replace with your actual crate name if different
     adaptive_concurrency::{
         reqwest_integration::{ReqwestService /* DefaultReqwestRetryLogic is in retries.rs */},
         retries::DefaultReqwestRetryLogic, // Assuming this is where it's defined
