@@ -1,0 +1,26 @@
+[package]
+name = "rate-arc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures = "0.3.31"
+pin-project = "1.1.10"
+rand = "0.9.1"
+serde = { version = "1.0.219", features = ["derive"] }
+snafu = {version =  "0.8.5", features = ["futures", "pin-project", "futures-core-crate", "futures-crate", "backtrace"]}
+tokio = { version = "1.45.0", features = ["full"] }
+tokio-test = "0.4.4"
+# tower = { version = "0.5.2", features = ["tokio", "retry", "tracing", "pin-project-lite", "tokio-stream", "timeout", "tokio-util", "futures-util", "futures-core", "load"] }
+# Tower
+tower = { version = "0.4.13", default-features = false, features = ["buffer", "limit", "retry", "timeout", "util", "balance", "discover"] }
+tower-http = { version = "0.6.4", default-features = false, features = ["compression-full", "decompression-gzip", "trace"] }
+tower-test = "0.4.0"
+paste = { version = "1.0.15" }
+
+
+tracing = "0.1.41"
+
+metrics = "0.24.2"
+metrics-tracing-context = { version = "0.17.0", default-features = false }
+metrics-util = { version = "0.18.0", default-features = false, features = ["registry"] }
