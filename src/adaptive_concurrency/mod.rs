@@ -4,12 +4,13 @@ mod controller;
 mod future;
 mod layer;
 mod semaphore;
-mod service;
+pub mod service;
 
 pub mod retries;
 pub mod stats;
 pub mod internal_event;
 pub mod http;
+pub mod reqwest_integration; // <-- Add this line
 
 use std::fmt;
 
@@ -19,6 +20,7 @@ pub(crate) use service::AdaptiveConcurrencyLimit;
 fn instant_now() -> std::time::Instant {
     tokio::time::Instant::now().into()
 }
+use bon::Builder;
 
 /// Configuration of adaptive concurrency parameters.
 ///
@@ -26,7 +28,7 @@ fn instant_now() -> std::time::Instant {
 /// unstable performance and sink behavior. Proceed with caution.
 // The defaults for these values were chosen after running several simulations on a test service that had
 // various responses to load. The values are the best balances found between competing outcomes.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Builder)]
 // #[serde(deny_unknown_fields)]
 pub struct AdaptiveConcurrencySettings {
     /// The initial concurrency limit to use. If not specified, the initial limit is 1 (no concurrency).
@@ -35,6 +37,7 @@ pub struct AdaptiveConcurrencySettings {
     /// long time to ramp up adaptive concurrency after a restart. You can find this value by looking at the
     /// `adaptive_concurrency_limit` metric.
     // #[serde(default = "default_initial_concurrency")]
+    #[builder(default)]
     pub(super) initial_concurrency: usize,
 
     /// The fraction of the current value to set the new concurrency limit when decreasing the limit.
@@ -44,6 +47,7 @@ pub struct AdaptiveConcurrencySettings {
     ///
     /// **Note**: The new limit is rounded down after applying this ratio.
     // #[serde(default = "default_decrease_ratio")]
+    #[builder(default)] 
     pub(super) decrease_ratio: f64,
 
     /// The weighting of new measurements compared to older measurements.
@@ -54,6 +58,7 @@ pub struct AdaptiveConcurrencySettings {
     /// the current RTT. Smaller values cause this reference to adjust more slowly, which may be useful if a service has
     /// unusually high response variability.
     // #[serde(default = "default_ewma_alpha")]
+    #[builder(default)]
     pub(super) ewma_alpha: f64,
 
     /// Scale of RTT deviations which are not considered anomalous.
@@ -65,12 +70,14 @@ pub struct AdaptiveConcurrencySettings {
     /// can ignore increases in RTT that are within an expected range. This factor is used to scale up the deviation to
     /// an appropriate range.  Larger values cause the algorithm to ignore larger increases in the RTT.
     //  #[serde(default = "default_rtt_deviation_scale")]
+    #[builder(default)]
     pub(super) rtt_deviation_scale: f64,
 
     /// The maximum concurrency limit.
     ///
     /// The adaptive request concurrency limit does not go above this bound. This is put in place as a safeguard.
     // #[serde(default = "default_max_concurrency_limit")]
+    #[builder(default)]
     pub(super) max_concurrency_limit: usize,
 }
 
@@ -106,7 +113,14 @@ impl Default for AdaptiveConcurrencySettings {
     }
 }
 
-
+impl AdaptiveConcurrencySettings {
+    pub fn get_initial_concurrency(&self) -> usize {
+        self.initial_concurrency
+    }
+    pub fn get_max_concurrency_limit(&self) -> usize {
+        self.max_concurrency_limit
+    }
+}
 
 #[derive(Debug)]
 pub struct Error(bool);

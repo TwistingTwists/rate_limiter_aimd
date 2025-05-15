@@ -11,6 +11,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use tower::{load::Load, Service};
 
 use crate::adaptive_concurrency::{retries::RetryLogic, controller::Controller, future::ResponseFuture, AdaptiveConcurrencySettings};
+use bon::Builder;
 
 /// Enforces a limit on the concurrent number of requests the underlying
 /// service can handle. Automatically expands and contracts the actual
@@ -29,7 +30,8 @@ enum State {
 
 impl<S, L> AdaptiveConcurrencyLimit<S, L> {
     /// Create a new automated concurrency limiter.
-    pub(crate) fn new(
+    pub fn new(
+        // pub(crate) fn new(
         inner: S,
         logic: L,
         concurrency: Option<usize>,
