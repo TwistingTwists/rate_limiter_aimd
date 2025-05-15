@@ -2,6 +2,14 @@
 name = "rate_limiter_aimd"
 version = "0.1.0"
 edition = "2024"
+description = "A Rust library for adaptive concurrency control based on network service feedback"
+homepage = "https://github.com/TwistingTwists/rate_limiter_aimd"
+repository = "https://github.com/TwistingTwists/rate_limiter_aimd"
+license = "MIT"
+keywords = ["concurrency", "rate-limiting", "networking", "async", "tokio"]
+categories = ["async", "algorithms", "network-programming"]
+readme = "README.md"
+authors = ["Abhishek Tripathi <abhishek.tripathi456@gmail.com>"]
 
 [dependencies]
 futures = "0.3.31"
@@ -11,12 +19,10 @@ serde = { version = "1.0.219", features = ["derive"] }
 snafu = {version =  "0.8.5", features = ["futures", "pin-project", "futures-core-crate", "futures-crate", "backtrace"]}
 tokio = { version = "1.45.0", features = ["full"] }
 tokio-test = "0.4.4"
-# tower = { version = "0.5.2", features = ["tokio", "retry", "tracing", "pin-project-lite", "tokio-stream", "timeout", "tokio-util", "futures-util", "futures-core", "load"] }
-# Tower
 tower = { version = "0.4.13", default-features = false, features = ["buffer", "limit", "retry", "timeout", "util", "balance", "discover"] }
 tower-http = { version = "0.6.4", default-features = false, features = ["compression-full", "decompression-gzip", "trace"] }
 tower-test = "0.4.0"
-paste = { version = "1.0.15" }
+paste = { version = "1.0.14" }
 
 
 tracing = "0.1.41"
