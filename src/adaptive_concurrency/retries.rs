@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures::FutureExt;
-use tokio::time::{sleep, Sleep};
+use tokio::time::{Sleep, sleep};
 use tower::{retry::Policy, timeout::error::Elapsed};
 // use vector_lib::configurable::configurable_component; // Assuming this is not needed for this standalone lib
 
@@ -257,11 +257,9 @@ impl RetryLogic for DefaultReqwestRetryLogic {
             GenericHttpError::Transport { .. } => true,
             GenericHttpError::Timeout => true,
             // Specific server errors indicated via the error type itself
-            GenericHttpError::ServerError { status, .. } => {
-                StatusCode::from_u16(*status)
-                    .map(|s| s.is_server_error() || s == StatusCode::TOO_MANY_REQUESTS)
-                    .unwrap_or(false)
-            }
+            GenericHttpError::ServerError { status, .. } => StatusCode::from_u16(*status)
+                .map(|s| s.is_server_error() || s == StatusCode::TOO_MANY_REQUESTS)
+                .unwrap_or(false),
             // Errors during request building or client-side processing are typically not retryable
             GenericHttpError::BuildRequest { .. } => false,
             GenericHttpError::InvalidRequest { .. } => false,
@@ -275,19 +273,29 @@ impl RetryLogic for DefaultReqwestRetryLogic {
             RetryAction::Successful
         } else if status == StatusCode::TOO_MANY_REQUESTS || // Explicit backpressure
                   status == StatusCode::SERVICE_UNAVAILABLE || // Common for temporary issues
-                  status.is_server_error() // Other 5xx errors
+                  status.is_server_error()
+        // Other 5xx errors
         {
-            RetryAction::Retry(Cow::Owned(format!("Server responded with status {}", status)))
-        } else if status.is_client_error() { // 4xx errors that are not TOO_MANY_REQUESTS
-            RetryAction::DontRetry(Cow::Owned(format!("Server responded with client error status {}", status)))
+            RetryAction::Retry(Cow::Owned(format!(
+                "Server responded with status {}",
+                status
+            )))
+        } else if status.is_client_error() {
+            // 4xx errors that are not TOO_MANY_REQUESTS
+            RetryAction::DontRetry(Cow::Owned(format!(
+                "Server responded with client error status {}",
+                status
+            )))
         } else {
             // For any other unhandled status codes
             warn!(message = "Unhandled response status for retry logic.", %status);
-            RetryAction::DontRetry(Cow::Owned(format!("Server responded with unhandled status {}", status)))
+            RetryAction::DontRetry(Cow::Owned(format!(
+                "Server responded with unhandled status {}",
+                status
+            )))
         }
     }
 }
-
 
 // `tokio-retry` crate related code - ExponentialBackoff
 // MIT License
@@ -368,7 +376,6 @@ impl Iterator for ExponentialBackoff {
         Some(duration)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

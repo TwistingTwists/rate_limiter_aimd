@@ -271,7 +271,6 @@ macro_rules! registered_event {
     };
 }
 
-
 // #[cfg(feature = "test")]
 // #[macro_export]
 // macro_rules! register {

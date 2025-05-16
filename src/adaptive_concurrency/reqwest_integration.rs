@@ -1,7 +1,7 @@
 // src/adaptive_concurrency/reqwest_integration.rs
+use crate::Error as CrateError;
 use crate::adaptive_concurrency::http::HttpError as GenericHttpError;
 use futures::future::BoxFuture; // Optional: use if converting reqwest::Error to GenericHttpError
-use crate::Error as CrateError;
 // NOTE: DefaultReqwestRetryLogic would typically be in retries.rs or a dedicated retry_logics.rs
 // For this example, assuming it's accessible via `super::retries::DefaultReqwestRetryLogic` if moved.
 // Or, if it's specific to reqwest and not generally reusable, it could live here.
@@ -88,7 +88,7 @@ impl Service<HttpRequest<Option<reqwest::Body>>> for ReqwestService {
                             .text()
                             .await
                             .unwrap_or_else(|_| "Could not read error body".to_string());
-                        
+
                         // Log error with appropriate level based on status
                         if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
                             warn!(
@@ -117,13 +117,13 @@ impl Service<HttpRequest<Option<reqwest::Body>>> for ReqwestService {
                         Err(GenericHttpError::Timeout)
                     } else if e.is_connect() {
                         error!(error = %e, "Connection error");
-                        Err(GenericHttpError::Transport { 
-                            source: Box::new(e) 
+                        Err(GenericHttpError::Transport {
+                            source: Box::new(e),
                         })
                     } else {
                         error!(error = %e, "Other reqwest error");
-                        Err(GenericHttpError::ClientError { 
-                            source: Box::new(e) 
+                        Err(GenericHttpError::ClientError {
+                            source: Box::new(e),
                         })
                     }
                 }

@@ -7,9 +7,23 @@ use std::{
 use tokio::sync::OwnedSemaphorePermit;
 use tower::timeout::error::Elapsed;
 // use vector_lib::internal_event::{InternalEventHandle as _, Registered};
-use crate::{adaptive_concurrency::internal_event::{InternalEventHandle as _, AdaptiveConcurrencyAveragedRtt, AdaptiveConcurrencyInFlight, AdaptiveConcurrencyLimit, AdaptiveConcurrencyLimitData, AdaptiveConcurrencyObservedRtt, Registered}, register};
+use crate::{
+    adaptive_concurrency::internal_event::{
+        AdaptiveConcurrencyAveragedRtt, AdaptiveConcurrencyInFlight, AdaptiveConcurrencyLimit,
+        AdaptiveConcurrencyLimitData, AdaptiveConcurrencyObservedRtt, InternalEventHandle as _,
+        Registered,
+    },
+    register,
+};
 
-use super::{http::HttpError, instant_now, retries::{RetryAction, RetryLogic}, semaphore::ShrinkableSemaphore, stats::{EwmaVar, Mean, MeanVariance}, AdaptiveConcurrencySettings};
+use super::{
+    AdaptiveConcurrencySettings,
+    http::HttpError,
+    instant_now,
+    retries::{RetryAction, RetryLogic},
+    semaphore::ShrinkableSemaphore,
+    stats::{EwmaVar, Mean, MeanVariance},
+};
 // #[cfg(test)]
 // use crate::test_util::stats::{TimeHistogram, TimeWeightedSum};
 // use crate::{
@@ -33,7 +47,6 @@ pub(super) struct Controller<L> {
     pub(super) inner: Arc<Mutex<Inner>>,
     // #[cfg(test)]
     // pub(super) stats: Arc<Mutex<ControllerStatistics>>,
-
     limit: Registered<AdaptiveConcurrencyLimit>,
     in_flight: Registered<AdaptiveConcurrencyInFlight>,
     observed_rtt: Registered<AdaptiveConcurrencyObservedRtt>,

@@ -6,11 +6,11 @@ mod layer;
 mod semaphore;
 pub mod service;
 
-pub mod retries;
-pub mod stats;
-pub mod internal_event;
 pub mod http;
-pub mod reqwest_integration; // <-- Add this line
+pub mod internal_event;
+pub mod reqwest_integration;
+pub mod retries;
+pub mod stats; // <-- Add this line
 
 use std::fmt;
 
@@ -47,7 +47,7 @@ pub struct AdaptiveConcurrencySettings {
     ///
     /// **Note**: The new limit is rounded down after applying this ratio.
     // #[serde(default = "default_decrease_ratio")]
-    #[builder(default)] 
+    #[builder(default)]
     pub(super) decrease_ratio: f64,
 
     /// The weighting of new measurements compared to older measurements.

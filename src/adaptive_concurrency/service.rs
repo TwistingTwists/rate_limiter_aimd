@@ -3,14 +3,17 @@ use std::{
     future::Future,
     mem,
     sync::Arc,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 
 use futures::future::BoxFuture;
 use tokio::sync::OwnedSemaphorePermit;
-use tower::{load::Load, Service};
+use tower::{Service, load::Load};
 
-use crate::adaptive_concurrency::{retries::RetryLogic, controller::Controller, future::ResponseFuture, AdaptiveConcurrencySettings};
+use crate::adaptive_concurrency::{
+    AdaptiveConcurrencySettings, controller::Controller, future::ResponseFuture,
+    retries::RetryLogic,
+};
 use bon::Builder;
 
 /// Enforces a limit on the concurrent number of requests the underlying
@@ -122,7 +125,6 @@ impl fmt::Debug for State {
         }
     }
 }
-
 
 // #[cfg(test)]
 // mod tests {
