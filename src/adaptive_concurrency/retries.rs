@@ -11,13 +11,13 @@ use futures::FutureExt;
 use tokio::time::{Sleep, sleep};
 use tower::{retry::Policy, timeout::error::Elapsed};
 // use vector_lib::configurable::configurable_component; // Assuming this is not needed for this standalone lib
-
+use bon::Builder;
 use crate::Error as CrateError; // Changed from `crate::Error` to `crate::Error as CrateError` for clarity
 use crate::adaptive_concurrency::http::HttpError as GenericHttpError; // Assuming http.rs exists at this path
 
 use reqwest::{Response as ReqwestResponse, StatusCode};
 use tracing::{debug, error, warn}; // Added tracing macros
-
+use std::fmt::Debug;
 pub enum RetryAction {
     /// Indicate that this request should be retried with a reason
     Retry(Cow<'static, str>),
@@ -29,7 +29,7 @@ pub enum RetryAction {
 
 pub trait RetryLogic: Clone + Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
-    type Response;
+    type Response: Debug;
 
     /// When the Service call returns an `Err` response, this function allows
     /// implementors to specify what kinds of errors can be retried.
@@ -65,7 +65,7 @@ pub enum JitterMode {
     Full,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Builder)]
 pub struct FibonacciRetryPolicy<L> {
     remaining_attempts: usize,
     previous_duration: Duration,
@@ -313,6 +313,14 @@ pub struct ExponentialBackoff {
 }
 
 impl ExponentialBackoff {
+    pub fn new(base: u64, factor: u64, max_delay: Option<Duration>) -> ExponentialBackoff {
+        ExponentialBackoff {
+            current: base,
+            base,
+            factor,
+            max_delay,
+        }
+    }
     /// Constructs a new exponential back-off strategy,
     /// given a base duration in milliseconds.
     ///

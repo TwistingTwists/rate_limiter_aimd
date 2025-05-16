@@ -15,8 +15,10 @@ use crate::{
     },
     register,
 };
+use tracing::instrument;
 
 use super::{
+    retries::ExponentialBackoff,
     AdaptiveConcurrencySettings,
     http::HttpError,
     instant_now,
@@ -280,6 +282,27 @@ impl<L> Controller<L>
 where
     L: RetryLogic,
 {
+    // #[instrument(skip(self))]
+    // fn handle_retry_with_backoff(
+    //     &self,
+    //     start: Instant,
+    //     backoff: &mut ExponentialBackoff,
+    //     error: &L::Error,
+    // ) -> bool {
+    //     if self.logic.is_retriable_error(error) {
+    //         let delay = backoff.next();
+    //         if let Some(delay) = delay {
+    //             tokio::time::sleep(delay);
+    //             true
+    //         } else {
+    //             false // Max retries reached
+    //         }
+    //     } else {
+    //         false // Not retriable
+    //     }
+    // }
+
+    #[instrument(skip(self))]
     pub(super) fn adjust_to_response(
         &self,
         start: Instant,
@@ -295,7 +318,7 @@ where
             Ok(action) => matches!(action, RetryAction::Retry(_)),
             Err(error) => {
                 if let Some(error) = error.downcast_ref::<L::Error>() {
-                    self.logic.is_retriable_error(error)
+                    self.logic.is_retriable_error(error) // Fall back to normal retry logic
                 } else if error.downcast_ref::<Elapsed>().is_some() {
                     true
                 } else if error.downcast_ref::<HttpError>().is_some() {
@@ -312,7 +335,7 @@ where
             }
         };
         // Only adjust to the RTT when the request was successfully processed.
-        let use_rtt = matches!(response_action, Ok(RetryAction::Successful));
+        let use_rtt: bool = matches!(response_action, Ok(RetryAction::Successful));
         self.adjust_to_response_inner(start, is_back_pressure, use_rtt)
     }
 }

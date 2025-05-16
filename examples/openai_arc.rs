@@ -1,21 +1,21 @@
 // examples/openai_adaptive_client.rs
-use http::{Method, Request, StatusCode, header};
+use http::{Method, Request, header};
 use rate_limiter_aimd::{
-    Error as CrateError, // Your crate's general error type
-    // Replace with your actual crate name if different
     adaptive_concurrency::{
-        AdaptiveConcurrencySettings,
-        reqwest_integration::{ReqwestService, /* DefaultReqwestRetryLogic is in retries.rs */},
-        retries::DefaultReqwestRetryLogic, // Assuming this is where it's defined
-        service::AdaptiveConcurrencyLimit,
-    },
+        layer::AdaptiveConcurrencyLimitLayer, reqwest_integration::ReqwestService, retries::{DefaultReqwestRetryLogic, FibonacciRetryPolicy, JitterMode}, service::AdaptiveConcurrencyLimit, AdaptiveConcurrencySettings
+    }, Error as CrateError
+};
+use tower::{
+    ServiceBuilder, ServiceExt,
+    limit::RateLimit,
+    retry::Retry,
+    timeout::Timeout,
+    Service,
 };
 use serde::{Deserialize, Serialize};
-use std::env;
+use std::{env, sync::Arc};
 use std::time::Duration;
 use tokio::time::Instant;
-use tower::Service;
-use tower::ServiceExt; // For .ready() and .call()
 use tracing::{Level, error, info, warn}; // Added warn and Level
 use tracing_subscriber::FmtSubscriber;
 
@@ -23,6 +23,12 @@ use tracing_subscriber::FmtSubscriber;
 const OPENAI_API_BASE_URL: &str = "https://api.kluster.ai/v1";
 const COMPLETIONS_ENDPOINT: &str = "/chat/completions";
 const MODEL: &str = "klusterai/Meta-Llama-3.1-8B-Instruct-Turbo";
+
+    // Type alias for our service stack
+    type OpenAIService = RateLimit<
+        AdaptiveConcurrencyLimit<
+            Retry<FibonacciRetryPolicy<DefaultReqwestRetryLogic>, Timeout<ReqwestService>>,
+            DefaultReqwestRetryLogic>>;
 
 // Simplified OpenAI request structure
 #[derive(Serialize, Debug)]
@@ -99,33 +105,35 @@ async fn main() -> Result<(), CrateError> {
     // 2. Define the retry logic (this informs the adaptive controller)
     let retry_logic = DefaultReqwestRetryLogic;
 
-    // Configure adaptive concurrency settings
-    let adaptive_settings = AdaptiveConcurrencySettings::builder()
-        .initial_concurrency(3) // Start with 2 concurrent requests allowed
-        .max_concurrency_limit(20) // Cap the max concurrent requests to 10
+    // Configure settings
+    let settings = AdaptiveConcurrencySettings::builder()
+        .initial_concurrency(3)
+        .max_concurrency_limit(20)
         .build();
-    info!(
-        "Initial concurrency: {}, Max concurrency: {}",
-        adaptive_settings.get_initial_concurrency(),
-        adaptive_settings.get_max_concurrency_limit()
-    );
-    // Other settings like ewma_alpha, decrease_ratio, etc., use defaults
 
-    // 4. Wrap the service with AdaptiveConcurrencyLimit
-    // The type annotation for the service is long, often inferred or aliased
-    let adaptive_openai_client: AdaptiveConcurrencyLimit<ReqwestService, DefaultReqwestRetryLogic> =
-        AdaptiveConcurrencyLimit::new(
-            reqwest_service,
-            retry_logic,
-            None, // Use adaptive behavior (no fixed concurrency override)
-            adaptive_settings,
-        );
-
+    // Build the service stack
+    let adaptive_openai_client: OpenAIService = ServiceBuilder::new()
+        .rate_limit(10, Duration::from_secs(1)) // 10 requests per second
+        .layer(AdaptiveConcurrencyLimitLayer::new(
+            None, // Use adaptive behavior
+            settings.clone(),
+            retry_logic.clone(),
+        ))
+        .retry(FibonacciRetryPolicy::new(
+         5,
+         Duration::from_millis(100),
+         Duration::from_secs(600),
+         retry_logic.clone(),
+         JitterMode::Full,
+        ))
+         .timeout(Duration::from_secs(800))
+        .service(reqwest_service);
+       
     info!("Adaptive OpenAI client initialized. Sending requests...");
     info!(
         "Initial concurrency: {}, Max concurrency: {}",
-        adaptive_settings.get_initial_concurrency(),
-        adaptive_settings.get_max_concurrency_limit()
+        settings.get_initial_concurrency(),
+        settings.get_max_concurrency_limit()
     );
 
     // Create a larger set of prompts to thoroughly test the concurrency limits
@@ -200,7 +208,7 @@ async fn main() -> Result<(), CrateError> {
 
         // AdaptiveConcurrencyLimit is Clone if its inner service and logic are Clone.
         // ReqwestService and DefaultReqwestRetryLogic are Clone.
-        let mut client_clone = adaptive_openai_client.clone();
+        let client_clone = adaptive_openai_client.clone();
 
         let task_prompt = prompt_text.to_string(); // Clone prompt_text for the async block
         let task = tokio::spawn(async move {

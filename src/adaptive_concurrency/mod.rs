@@ -2,7 +2,7 @@
 
 mod controller;
 mod future;
-mod layer;
+pub mod layer;
 mod semaphore;
 pub mod service;
 
