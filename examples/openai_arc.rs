@@ -1,25 +1,26 @@
 // examples/openai_adaptive_client.rs
-use rate_limiter_aimd::{ // Replace with your actual crate name if different
+use http::{Method, Request, StatusCode, header};
+use rate_limiter_aimd::{
+    Error as CrateError, // Your crate's general error type
+    // Replace with your actual crate name if different
     adaptive_concurrency::{
-        reqwest_integration::{ReqwestService /* DefaultReqwestRetryLogic is in retries.rs */},
+        AdaptiveConcurrencySettings,
+        reqwest_integration::{ReqwestService, /* DefaultReqwestRetryLogic is in retries.rs */},
         retries::DefaultReqwestRetryLogic, // Assuming this is where it's defined
         service::AdaptiveConcurrencyLimit,
-        AdaptiveConcurrencySettings,
     },
-    Error as CrateError, // Your crate's general error type
 };
-use tower::Service;
-use http::{header, Method, Request, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::time::Duration;
 use tokio::time::Instant;
+use tower::Service;
 use tower::ServiceExt; // For .ready() and .call()
-use tracing::{error, info, warn, Level}; // Added warn and Level
+use tracing::{Level, error, info, warn}; // Added warn and Level
 use tracing_subscriber::FmtSubscriber;
 
 // modify these if you want to test with different models
-const OPENAI_API_BASE_URL: &str = "https://api.kluster.ai/v1";  
+const OPENAI_API_BASE_URL: &str = "https://api.kluster.ai/v1";
 const COMPLETIONS_ENDPOINT: &str = "/chat/completions";
 const MODEL: &str = "klusterai/Meta-Llama-3.1-8B-Instruct-Turbo";
 
@@ -49,7 +50,7 @@ struct OpenAiChatResponse {
 struct Choice {
     index: u32,
     message: Message, // Changed from MessageContent to reuse Message
-    // finish_reason: String,
+                      // finish_reason: String,
 }
 
 // Helper to build the HTTP request for OpenAI
@@ -66,8 +67,7 @@ fn build_openai_request(
         max_tokens: 50,
     };
 
-    let body_bytes = serde_json::to_vec(&request_payload)
-        .map_err(|e| Box::new(e) as CrateError)?; // Convert serde_json::Error
+    let body_bytes = serde_json::to_vec(&request_payload).map_err(|e| Box::new(e) as CrateError)?; // Convert serde_json::Error
     let reqwest_body = reqwest::Body::from(body_bytes);
 
     let uri = format!("{}{}", OPENAI_API_BASE_URL, COMPLETIONS_ENDPOINT);
@@ -89,11 +89,9 @@ async fn main() -> Result<(), CrateError> {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO) // Set to DEBUG for more verbose output from the library
         .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("setting default subscriber failed");
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let openai_api_key = env::var("OPENAI_API_KEY")
-        .map_err(|e| Box::new(e) as CrateError)?; // Convert env::VarError
+    let openai_api_key = env::var("OPENAI_API_KEY").map_err(|e| Box::new(e) as CrateError)?; // Convert env::VarError
 
     // 1. Create the base ReqwestService
     let reqwest_service = ReqwestService::new();
@@ -103,8 +101,8 @@ async fn main() -> Result<(), CrateError> {
 
     // Configure adaptive concurrency settings
     let adaptive_settings = AdaptiveConcurrencySettings::builder()
-        .initial_concurrency(2)    // Start with 2 concurrent requests allowed
-        .max_concurrency_limit(10) // Cap the max concurrent requests to 10
+        .initial_concurrency(3) // Start with 2 concurrent requests allowed
+        .max_concurrency_limit(20) // Cap the max concurrent requests to 10
         .build();
     info!(
         "Initial concurrency: {}, Max concurrency: {}",
@@ -129,7 +127,6 @@ async fn main() -> Result<(), CrateError> {
         adaptive_settings.get_initial_concurrency(),
         adaptive_settings.get_max_concurrency_limit()
     );
-
 
     // Create a larger set of prompts to thoroughly test the concurrency limits
     let prompts = vec![
@@ -162,9 +159,41 @@ async fn main() -> Result<(), CrateError> {
         "What is the difference between a virus and a bacteria?",
         "Brahmos missile description please.",
         "Indus water treaty description, 30 words.",
+        "How far is the Moon from Earth?",
+        "What is the tallest mountain in the world?",
+        "Name a famous painting by Van Gogh.",
+        "What does DNA stand for?",
+        "Who invented the lightbulb?",
+        "What’s the capital of Brazil?",
+        "How many bones are in the human body?",
+        "Give me a quick joke.",
+        "What is the largest ocean on Earth?",
+        "Translate 'hello' into Japanese.",
+        "Who wrote *Pride and Prejudice*?",
+        "What is the speed of light?",
+        "Tell me a riddle.",
+        "What’s the population of New York City?",
+        "How do black holes form?",
+        "Who played Iron Man in the Marvel movies?",
+        "What’s a good beginner yoga pose?",
+        "Explain gravity like I’m five.",
+        "What is Bitcoin?",
+        "How do you say 'thank you' in French?",
+        "Name a constellation in the night sky.",
+        "What is a haiku?",
+        "Who painted the Mona Lisa?",
+        "Give me a tip for learning a new language.",
+        "What is quantum computing?",
+        "How do birds navigate during migration?",
+        "What’s a good workout for beginners?",
+        "Who was the first person in space?",
+        "What does a rainbow symbolize?",
+        "Describe what happens during an eclipse.",
     ];
 
     let mut tasks = Vec::new();
+
+    info!("\n\n prompt length = {}\n\n", prompts.len());
 
     for (i, prompt_text) in prompts.into_iter().enumerate() {
         let request = build_openai_request(&openai_api_key, prompt_text)?;
@@ -175,13 +204,19 @@ async fn main() -> Result<(), CrateError> {
 
         let task_prompt = prompt_text.to_string(); // Clone prompt_text for the async block
         let task = tokio::spawn(async move {
-            info!(task_id = i, "Preparing to send request for: '{}'", task_prompt);
+            info!(
+                task_id = i,
+                "Preparing to send request for: '{}'", task_prompt
+            );
             let request_start_time = Instant::now();
 
             // Wait for the service to be ready (acquires a permit from the adaptive semaphore)
             match client_clone.ready().await {
                 Ok(mut ready_client) => {
-                    info!(task_id = i, "Service ready, sending request for: '{}'", task_prompt);
+                    info!(
+                        task_id = i,
+                        "Service ready, sending request for: '{}'", task_prompt
+                    );
                     match ready_client.call(request).await {
                         Ok(response) => {
                             let status = response.status();
@@ -210,7 +245,10 @@ async fn main() -> Result<(), CrateError> {
                                     }
                                 }
                             } else {
-                                let error_body_text = response.text().await.unwrap_or_else(|_| "Could not read error body".to_string());
+                                let error_body_text = response
+                                    .text()
+                                    .await
+                                    .unwrap_or_else(|_| "Could not read error body".to_string());
                                 warn!( // Changed to warn as it's an API error, not service error
                                     task_id = i,
                                     status = %status,
@@ -221,7 +259,8 @@ async fn main() -> Result<(), CrateError> {
                                 );
                             }
                         }
-                        Err(e) => { // This error is CrateError, likely wrapping GenericHttpError
+                        Err(e) => {
+                            // This error is CrateError, likely wrapping GenericHttpError
                             let rtt = request_start_time.elapsed();
                             error!(
                                 task_id = i,
@@ -233,7 +272,8 @@ async fn main() -> Result<(), CrateError> {
                         }
                     }
                 }
-                Err(e) => { // This error is from poll_ready (CrateError)
+                Err(e) => {
+                    // This error is from poll_ready (CrateError)
                     error!(
                         task_id = i,
                         prompt = task_prompt,

@@ -10,7 +10,8 @@ use snafu::Snafu;
 /// The `Controller` might look for this specific error type if it needs to
 /// make decisions based on "is this an HTTP protocol error vs. a network error".
 #[derive(Debug, Snafu)]
-#[snafu(visibility(pub(crate)))]  pub enum HttpError {
+#[snafu(visibility(pub(crate)))]
+pub enum HttpError {
     /// An error occurred during the transport of the request (e.g., network issue, DNS).
     #[snafu(display("HTTP transport error: {}", source))]
     Transport { source: CrateError }, // Can wrap a boxed error from the client

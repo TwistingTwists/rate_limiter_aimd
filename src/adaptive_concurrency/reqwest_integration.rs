@@ -8,7 +8,7 @@ use crate::Error as CrateError;
 // Let's assume it's defined elsewhere (e.g., in retries.rs as previously discussed) for better separation.
 // use super::retries::DefaultReqwestRetryLogic;
 
-use http::Request as HttpRequest;
+use http::{Request as HttpRequest, StatusCode};
 use reqwest;
 use std::future::Future;
 use std::pin::Pin;
@@ -77,9 +77,57 @@ impl Service<HttpRequest<Option<reqwest::Body>>> for ReqwestService {
 
         let request_future = request_builder.send();
         Box::pin(async move {
-            request_future.await.map_err(|e| GenericHttpError::ClientError {
-                source: Box::new(e),
-            })
+            match request_future.await {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        Ok(response)
+                    } else {
+                        // Get response body for error details
+                        let error_body = response
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "Could not read error body".to_string());
+                        
+                        // Log error with appropriate level based on status
+                        if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
+                            warn!(
+                                status = %status,
+                                error_body = %error_body,
+                                "Server error or rate limited"
+                            );
+                        } else if status.is_client_error() {
+                            error!(
+                                status = %status,
+                                error_body = %error_body,
+                                "Client error"
+                            );
+                        }
+
+                        Err(GenericHttpError::ServerError {
+                            status: status.as_u16(),
+                            body: error_body,
+                        })
+                    }
+                }
+                Err(e) => {
+                    // Handle reqwest errors
+                    if e.is_timeout() {
+                        warn!(error = %e, "Request timed out");
+                        Err(GenericHttpError::Timeout)
+                    } else if e.is_connect() {
+                        error!(error = %e, "Connection error");
+                        Err(GenericHttpError::Transport { 
+                            source: Box::new(e) 
+                        })
+                    } else {
+                        error!(error = %e, "Other reqwest error");
+                        Err(GenericHttpError::ClientError { 
+                            source: Box::new(e) 
+                        })
+                    }
+                }
+            }
         })
     }
 }
