@@ -91,7 +91,7 @@ impl<E: RegisterInternalEvent> RegisterInternalEvent for DefaultName<E> {
 //     event.emit();
 // }
 
-#[cfg(not(any(test, feature = "test")))]
+#[cfg(not(test))]
 pub fn emit(event: impl InternalEvent) {
     event.emit();
 }
@@ -282,7 +282,7 @@ macro_rules! registered_event {
 //     };
 // }
 
-// #[cfg(not(feature = "test"))]
+// #[cfg(not(test))] // Corrected from feature = "test"
 #[macro_export]
 macro_rules! register {
     ($event:expr) => {

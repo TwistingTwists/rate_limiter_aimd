@@ -1,5 +1,4 @@
 // src/adaptive_concurrency/reqwest_integration.rs
-use crate::Error as CrateError;
 use crate::adaptive_concurrency::http::HttpError as GenericHttpError;
 use futures::future::BoxFuture; // Optional: use if converting reqwest::Error to GenericHttpError
 // NOTE: DefaultReqwestRetryLogic would typically be in retries.rs or a dedicated retry_logics.rs
@@ -10,8 +9,6 @@ use futures::future::BoxFuture; // Optional: use if converting reqwest::Error to
 
 use http::{Request as HttpRequest, StatusCode};
 use reqwest;
-use std::future::Future;
-use std::pin::Pin;
 use std::task::{Context, Poll};
 use tower::Service;
 

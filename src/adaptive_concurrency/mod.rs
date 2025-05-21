@@ -14,7 +14,6 @@ pub mod stats; // <-- Add this line
 
 use std::fmt;
 
-pub(crate) use layer::AdaptiveConcurrencyLimitLayer;
 pub(crate) use service::AdaptiveConcurrencyLimit;
 
 fn instant_now() -> std::time::Instant {
@@ -123,7 +122,7 @@ impl AdaptiveConcurrencySettings {
 }
 
 #[derive(Debug)]
-pub struct Error(bool);
+pub struct Error; // Changed to unit struct
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

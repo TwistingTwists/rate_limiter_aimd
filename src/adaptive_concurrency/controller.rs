@@ -18,7 +18,6 @@ use crate::{
 use tracing::instrument;
 
 use super::{
-    retries::ExponentialBackoff,
     AdaptiveConcurrencySettings,
     http::HttpError,
     instant_now,
