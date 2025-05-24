@@ -141,68 +141,49 @@ impl<L: RetryLogic> FibonacciRetryPolicy<L> {
     }
 }
 
-impl<Req, Res, L> Policy<Req, Res, CrateError> for FibonacciRetryPolicy<L>
+impl<Req, Res, L> Policy<Req, Res, L::Error> for FibonacciRetryPolicy<L>
 where
     Req: Clone,
-    L: RetryLogic<Response = Res>,
+    L: RetryLogic<Response = Res>, // L::Error requires std::error::Error, which means Display + Debug
 {
     type Future = RetryPolicyFuture<L>;
 
-    // NOTE: in the error cases- `Error` and `EventsDropped` internal events are emitted by the
-    // driver, so only need to log here.
-    fn retry(&self, _: &Req, result: Result<&Res, &CrateError>) -> Option<Self::Future> {
+    fn retry(&self, _request: &Req, result: Result<&Res, &L::Error>) -> Option<Self::Future> {
         match result {
             Ok(response) => match self.logic.should_retry_response(response) {
                 RetryAction::Retry(reason) => {
                     if self.remaining_attempts == 0 {
                         error!(
-                            message = "OK/retry response but retries exhausted; dropping the request.",
-                            reason = ?reason,
-                            // internal_log_rate_limit = true, // Assuming this is context specific
-                        );
-                        return None;
-                    }
-
-                    warn!(message = "Retrying after response.", reason = %reason, /* internal_log_rate_limit = true */);
-                    Some(self.build_retry())
-                }
-
-                RetryAction::DontRetry(reason) => {
-                    error!(message = "Not retriable; dropping the request.", reason = ?reason, /* internal_log_rate_limit = true */);
-                    None
-                }
-
-                RetryAction::Successful => None,
-            },
-            Err(error) => {
-                if self.remaining_attempts == 0 {
-                    error!(message = "Retries exhausted; dropping the request.", %error, /* internal_log_rate_limit = true */);
-                    return None;
-                }
-
-                if let Some(expected) = error.downcast_ref::<L::Error>() {
-                    if self.logic.is_retriable_error(expected) {
-                        warn!(message = "Retrying after error.", error = %expected, /* internal_log_rate_limit = true */);
-                        Some(self.build_retry())
-                    } else {
-                        error!(
-                            message = "Non-retriable error; dropping the request.",
-                            %error,
+                            message = "OK/retry response but retries exhausted; dropping request.",
+                            %reason,
                             // internal_log_rate_limit = true,
                         );
                         None
+                    } else {
+                        warn!(message = "Retrying after OK response indicated retry needed.", %reason, /* internal_log_rate_limit = true */);
+                        Some(self.build_retry())
                     }
-                } else if error.downcast_ref::<Elapsed>().is_some() {
-                    warn!(
-                        message = "Request timed out. If this happens often while the events are actually reaching their destination, try decreasing `batch.max_bytes` and/or using `compression` if applicable. Alternatively `request.timeout_secs` can be increased.",
-                        // internal_log_rate_limit = true
-                    );
+                }
+                RetryAction::DontRetry(reason) => {
+                    error!(message = "Not retriable (from response); dropping request.", %reason, /* internal_log_rate_limit = true */);
+                    None
+                }
+                RetryAction::Successful => None,
+            },
+            Err(service_error) => { // service_error is &L::Error
+                if self.remaining_attempts == 0 {
+                    error!(message = "Retries exhausted; dropping request.", error = %service_error, /* internal_log_rate_limit = true */);
+                    return None;
+                }
+
+                if self.logic.is_retriable_error(service_error) {
+                    warn!(message = "Retrying after service error.", error = %service_error, /* internal_log_rate_limit = true */);
                     Some(self.build_retry())
                 } else {
                     error!(
-                        message = "Unexpected error type; dropping the request.",
-                        %error,
-                        // internal_log_rate_limit = true
+                        message = "Non-retriable service error (from logic); dropping request.",
+                        error = %service_error,
+                        // internal_log_rate_limit = true,
                     );
                     None
                 }
@@ -211,7 +192,7 @@ where
     }
 
     fn clone_request(&self, request: &Req) -> Option<Req> {
-        Some(request.clone())
+        Some(request.clone()) // Relies on Req: Clone
     }
 }
 
@@ -382,6 +363,148 @@ impl Iterator for ExponentialBackoff {
         }
 
         Some(duration)
+    }
+}
+
+// --- NEW: ExponentialBackoffPolicy ---
+
+#[derive(Clone, Debug)]
+pub struct ExponentialBackoffPolicy<L: RetryLogic> {
+    attempts_remaining: usize,
+    backoff_iterator: ExponentialBackoff,
+    max_total_retry_duration: Option<Duration>, // Optional: if you want to cap total time across retries
+    first_attempt_made: bool, // To ensure backoff_iterator.next() isn't called before the first retry
+    logic: L,
+    jitter_mode: JitterMode,
+}
+
+// Future for ExponentialBackoffPolicy
+pub struct ExponentialPolicyFuture<L: RetryLogic> {
+    delay: Pin<Box<Sleep>>,
+    policy_state_after_delay: ExponentialBackoffPolicy<L>,
+}
+
+impl<L: RetryLogic> ExponentialBackoffPolicy<L> {
+    pub fn new(
+        max_attempts: usize,
+        initial_backoff_iterator: ExponentialBackoff, // Already configured with initial, base, max_single_delay
+        logic: L,
+        jitter_mode: JitterMode,
+        max_total_retry_duration: Option<Duration>,
+    ) -> Self {
+        Self {
+            attempts_remaining: max_attempts,
+            backoff_iterator: initial_backoff_iterator,
+            max_total_retry_duration, // Not directly used by tower-retry's Policy, but useful for configuration
+            first_attempt_made: false,
+            logic,
+            jitter_mode,
+        }
+    }
+
+    fn build_retry_future(&self, delay_duration: Duration) -> ExponentialPolicyFuture<L> {
+        let mut next_policy_state = self.clone();
+        next_policy_state.attempts_remaining -= 1;
+        next_policy_state.first_attempt_made = true;
+        // The iterator for backoff_iterator itself is advanced when .next() is called to get delay_duration
+
+        debug!(
+            message = "Retrying request with exponential backoff.",
+            delay_ms = %delay_duration.as_millis(),
+            attempts_remaining = next_policy_state.attempts_remaining
+        );
+
+        ExponentialPolicyFuture {
+            delay: Box::pin(sleep(delay_duration)),
+            policy_state_after_delay: next_policy_state,
+        }
+    }
+
+    fn apply_jitter(&self, base_duration: Duration) -> Duration {
+        match self.jitter_mode {
+            JitterMode::None => base_duration,
+            JitterMode::Full => {
+                if base_duration.as_millis() == 0 {
+                    return Duration::from_millis(0);
+                }
+                // rand::random generates a value between 0.0 and 1.0
+                // Multiply by base_duration.as_millis() to get a random portion of the duration
+                let random_millis = (rand::random::<f64>() * base_duration.as_millis() as f64) as u64;
+                Duration::from_millis(random_millis)
+            }
+        }
+    }
+}
+
+impl<Req, Res, L> Policy<Req, Res, L::Error> for ExponentialBackoffPolicy<L>
+where
+    Req: Clone,
+    L: RetryLogic<Response = Res>, // L::Error requires std::error::Error
+{
+    type Future = ExponentialPolicyFuture<L>;
+
+    fn retry(&self, _request: &Req, result: Result<&Res, &L::Error>) -> Option<Self::Future> {
+        if self.attempts_remaining == 0 {
+            error!(message = "Max retry attempts reached; dropping request.", error_if_any=?result.err());
+            return None;
+        }
+
+        let should_retry_action = match result {
+            Ok(response) => self.logic.should_retry_response(response),
+            Err(service_error) => {
+                if self.logic.is_retriable_error(service_error) {
+                    RetryAction::Retry(Cow::Borrowed("Service error deemed retriable"))
+                } else {
+                    RetryAction::DontRetry(Cow::Borrowed("Service error deemed not retriable"))
+                }
+            }
+        };
+
+        match should_retry_action {
+            RetryAction::Retry(reason) => {
+                let mut current_backoff_iterator = self.backoff_iterator.clone(); // Clone to call next()
+                let base_delay = match current_backoff_iterator.next() {
+                    Some(delay) => delay,
+                    None => { // Iterator exhausted (e.g., if it had a max number of internal steps)
+                        warn!(message = "Exponential backoff iterator exhausted, but attempts remain. Not retrying.", %reason);
+                        return None;
+                    }
+                };
+                let jittered_delay = self.apply_jitter(base_delay);
+
+                warn!(message = "Retrying after response/error indicated retry needed.", %reason, base_delay_ms = base_delay.as_millis(), jittered_delay_ms = jittered_delay.as_millis());
+                
+                let mut next_policy_state = self.clone();
+                next_policy_state.attempts_remaining = self.attempts_remaining.saturating_sub(1);
+                next_policy_state.backoff_iterator = current_backoff_iterator; // Store the advanced iterator
+
+                Some(ExponentialPolicyFuture {
+                    delay: Box::pin(sleep(jittered_delay)),
+                    policy_state_after_delay: next_policy_state,
+                })
+            }
+            RetryAction::DontRetry(reason) => {
+                error!(message = "Not retriable (from logic); dropping request.", %reason, error_if_any=?result.err());
+                None
+            }
+            RetryAction::Successful => None,
+        }
+    }
+
+    fn clone_request(&self, request: &Req) -> Option<Req> {
+        Some(request.clone())
+    }
+}
+
+// Safety: L is never pinned, and we use no unsafe pin projections.
+impl<L: RetryLogic> Unpin for ExponentialPolicyFuture<L> {}
+
+impl<L: RetryLogic> Future for ExponentialPolicyFuture<L> {
+    type Output = ExponentialBackoffPolicy<L>; // Return the next state of the policy
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        std::task::ready!(self.delay.poll_unpin(cx));
+        Poll::Ready(self.policy_state_after_delay.clone())
     }
 }
 

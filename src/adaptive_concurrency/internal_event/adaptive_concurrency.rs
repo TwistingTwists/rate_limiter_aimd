@@ -1,9 +1,9 @@
 use std::time::Duration;
-
 use crate::registered_event;
 use metrics::{Histogram, histogram};
+use tracing;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct AdaptiveConcurrencyLimitData {
     pub concurrency: u64,
     pub reached_limit: bool,
@@ -26,12 +26,23 @@ registered_event! {
 
     fn emit(&self, data: AdaptiveConcurrencyLimitData) {
         self.limit.record(data.concurrency as f64);
-        let reached_limit = data.reached_limit.then_some(1.0).unwrap_or_default();
-        self.reached_limit.record(reached_limit);
-        let back_pressure = data.had_back_pressure.then_some(1.0).unwrap_or_default();
-        self.back_pressure.record(back_pressure);
+        let reached_limit_val = data.reached_limit.then_some(1.0).unwrap_or_default();
+        self.reached_limit.record(reached_limit_val);
+        let back_pressure_val = data.had_back_pressure.then_some(1.0).unwrap_or_default();
+        self.back_pressure.record(back_pressure_val);
         self.past_rtt_mean.record(data.past_rtt);
-        // past_rtt_deviation is unrecorded
+
+        // ADDED LOGGING FOR THE EXAMPLE
+        tracing::info!(
+            target: "adaptive_concurrency::stats",
+            concurrency_limit = data.concurrency,
+            reached_max_limit_this_cycle = data.reached_limit, // Renamed for clarity from "reached_limit"
+            had_back_pressure_this_cycle = data.had_back_pressure, // Renamed for clarity
+            current_rtt_ms = data.current_rtt.map(|d| d.as_millis()),
+            past_rtt_ms = data.past_rtt.as_millis(),
+            past_rtt_deviation_ms = data.past_rtt_deviation.as_millis(),
+            "Limit Adjusted"
+        );
     }
 }
 
@@ -40,8 +51,10 @@ registered_event! {
         in_flight: Histogram = histogram!("adaptive_concurrency_in_flight"),
     }
 
-    fn emit(&self, in_flight: u64) {
-        self.in_flight.record(in_flight as f64);
+    fn emit(&self, in_flight_count: u64) {
+        self.in_flight.record(in_flight_count as f64);
+        // ADDED LOGGING FOR THE EXAMPLE
+        tracing::debug!(target: "adaptive_concurrency::stats", in_flight = in_flight_count, "In-flight Updated");
     }
 }
 
@@ -52,6 +65,8 @@ registered_event! {
 
     fn emit(&self, rtt: Duration) {
         self.observed_rtt.record(rtt);
+        // Optionally log raw RTTs, can be very verbose
+        tracing::trace!(target: "adaptive_concurrency::stats", observed_rtt_ms = rtt.as_millis(), "RTT Observed");
     }
 }
 
@@ -62,5 +77,7 @@ registered_event! {
 
     fn emit(&self, rtt: Duration) {
         self.averaged_rtt.record(rtt);
+        // Log averaged RTT when it's computed for an adjustment period
+        tracing::debug!(target: "adaptive_concurrency::stats", averaged_rtt_ms = rtt.as_millis(), "RTT Averaged for Period");
     }
 }
