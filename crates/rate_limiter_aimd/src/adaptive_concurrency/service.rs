@@ -14,7 +14,6 @@ use crate::adaptive_concurrency::{
     AdaptiveConcurrencySettings, controller::Controller, future::ResponseFuture,
     retries::RetryLogic,
 };
-use bon::Builder;
 
 /// Enforces a limit on the concurrent number of requests the underlying
 /// service can handle. Automatically expands and contracts the actual
