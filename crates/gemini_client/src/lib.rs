@@ -44,7 +44,7 @@ pub enum GeminiClientError {
 
     #[snafu(display("Error from adaptive concurrency limiter: {source}"))]
     AdaptiveConcurrency {
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+        source: RateLimiterError,
     },
 
     #[snafu(display("HTTP error: {source}"))]
@@ -52,6 +52,12 @@ pub enum GeminiClientError {
 
     #[snafu(display("Failed to deserialize JSON response: {source}"))]
     JsonDeserialization { source: serde_json::Error },
+
+    #[snafu(display("Failed to serialize JSON request: {source}"))]
+    JsonSerialization { source: serde_json::Error },
+
+    #[snafu(display("Base URL does not support path segments: {url}"))]
+    BaseUrlCannotHavePathSegments { url: String },
 
     #[snafu(display("API error: {code} - {message}"))]
     ApiError { code: u16, message: String },
@@ -203,6 +209,8 @@ pub struct PromptFeedback {
 
 
 // --- Gemini Client ---
+/// Represents the underlying HTTP client service stack, including adaptive concurrency,
+/// retries, and the base Reqwest service.
 type HttpClientService = AdaptiveConcurrencyLimit<
     Retry<
         ExponentialBackoffPolicy<DefaultReqwestRetryLogic>,
@@ -212,22 +220,38 @@ type HttpClientService = AdaptiveConcurrencyLimit<
 >;
 
 #[derive(Clone)]
+/// Client for interacting with the Google Gemini API.
+///
+/// It handles request construction, API communication, and response parsing.
+/// It integrates adaptive concurrency control and retry mechanisms.
 pub struct GeminiClient {
     service: HttpClientService,
+    /// Shared configuration for the client.
     pub config: Arc<GeminiClientConfig>,
-    generate_content_url_template: String, // e.g., "{base_url}/{model}:generateContent?key={api_key}"
+    // parsed_base_url: Url, // Parsed base URL for API requests.
+    // api_key: String,      // API key, stored for easy access in URL construction.
 }
 
 impl Debug for GeminiClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GeminiClient")
             .field("config", &self.config)
-            .field("generate_content_url_template", &self.generate_content_url_template)
-            .finish_non_exhaustive() // service is not easily Debug-printable
+            // service is not Debug, and other fields are derived from config or internal
+            .finish_non_exhaustive() 
     }
 }
 
 impl GeminiClient {
+    /// Creates a new `GeminiClient` instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `config`: Configuration for the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GeminiClientError::Initialization` if the API key is empty.
+    /// Other errors can occur during the setup of underlying services.
     pub fn new(config: GeminiClientConfig) -> Result<Self, GeminiClientError> {
         if config.api_key.is_empty() {
             return Err(GeminiClientError::Initialization {
@@ -267,27 +291,54 @@ impl GeminiClient {
             ))
             .retry(retry_policy) // Retry layer wraps the base_service directly
             .service(base_service);
-        
-        // Store the template, model will be filled in per-request or use default
-        let generate_content_url_template = format!(
-            "{}/{{model}}:generateContent?key={}", // {model} is a placeholder
-            config.base_url.trim_end_matches('/'),
-            config.api_key
-        );
-
 
         Ok(Self {
             service,
             config: Arc::new(config),
-            generate_content_url_template,
         })
     }
 
+    /// Constructs the full URL for a given model and the `generateContent` endpoint.
     fn build_url_for_model(&self, model: &str) -> Result<Url, GeminiClientError> {
-        let url_str = self.generate_content_url_template.replace("{model}", model);
-        Url::parse(&url_str).map_err(|e| GeminiClientError::UrlParse { source: e })
+        // Start with the base URL from config (e.g., "https://.../v1beta/models")
+        let mut endpoint_url = Url::parse(&self.config.base_url)
+            .map_err(|e| GeminiClientError::UrlParse { source: e })?;
+
+        // The segment to append, combining model and action, e.g., "gemini-pro:generateContent".
+        // This segment will be added to the path of the base_url.
+        let model_action_path_segment = format!("{}:generateContent", model);
+        tracing::debug!(target: "gemini_client", base_url = %endpoint_url, model_action_segment = %model_action_path_segment, "Preparing to append model action segment");
+
+        // Append the model_action_path_segment to the existing path.
+        // If endpoint_url is "https://.../models", its path is "/models".
+        // After push, path becomes "/models/gemini-pro:generateContent".
+        // path_segments_mut() handles the logic of adding slashes correctly.
+        endpoint_url.path_segments_mut()
+            .map_err(|_| GeminiClientError::BaseUrlCannotHavePathSegments {
+                url: self.config.base_url.clone(),
+            })?
+            .push(&model_action_path_segment);
+        
+        tracing::debug!(target: "gemini_client", url_after_path_append = %endpoint_url, "URL after appending path segment");
+
+        // Add the API key as a query parameter.
+        endpoint_url.query_pairs_mut().append_pair("key", &self.config.api_key);
+        tracing::info!(target: "gemini_client", final_url = %endpoint_url, "Final endpoint URL with API key");
+
+        Ok(endpoint_url)
     }
 
+    /// Generates content based on the provided model and request.
+    ///
+    /// # Arguments
+    ///
+    /// * `model`: The model to use for content generation (e.g., "gemini-pro").
+    /// * `request`: The `GenerateContentRequest` containing the prompts and configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GeminiClientError` if the request fails at any stage (construction,
+    /// network, API error, deserialization).
     pub async fn generate_content(
         &mut self,
         model: &str, // e.g., "gemini-pro", "gemini-1.5-flash-latest"
@@ -295,31 +346,30 @@ impl GeminiClient {
     ) -> Result<GenerateContentResponse, GeminiClientError> {
         let url = self.build_url_for_model(model)?;
         let body_bytes = serde_json::to_vec(&request)
-            .map_err(|e| GeminiClientError::JsonDeserialization { source: e })?; // Should be a different error type
+            .map_err(|e| GeminiClientError::JsonSerialization { source: e })?;
 
-        let http_request = HttpRequest::builder()
+        let http_request_builder = HttpRequest::builder()
             .method("POST")
             .uri(url.as_str())
-            .header("Content-Type", "application/json")
-            .body(Some(Bytes::from(body_bytes)))
-            .map_err(|e| GeminiClientError::RequestConstruction { source: e })?;
+            .header("Content-Type", "application/json");
+
+        let http_request = http_request_builder.body(Some(Bytes::from(body_bytes)))
+            .map_err(|e| {
+                tracing::error!(target: "gemini_client", "HTTP request construction failed. Error (debug): {:?}, URL attempted: '{}'", e, url.as_str());
+                GeminiClientError::RequestConstruction { source: e }
+            })?;
 
         // Wait for the service to be ready
         futures::future::poll_fn(|cx| self.service.poll_ready(cx))
             .await
-            .map_err(|e: RateLimiterError| { // Error is now from AdaptiveConcurrencyLimit
-                GeminiClientError::AdaptiveConcurrency { source: e }
-            })?;
+            .map_err(|e| GeminiClientError::AdaptiveConcurrency { source: e })?;
 
         // Call the service
         let response = self
             .service
             .call(http_request)
             .await
-            .map_err(|e: RateLimiterError| { // Error is now from AdaptiveConcurrencyLimit
-                // TODO: Refine this mapping if RateLimiterError can expose underlying RetryError details
-                GeminiClientError::AdaptiveConcurrency { source: e }
-            })?;
+            .map_err(|e| GeminiClientError::AdaptiveConcurrency { source: e })?;
 
         // Process the response
         let status = response.status();
@@ -354,7 +404,7 @@ impl GeminiClient {
         }
     }
 
-    // Helper to make a request with the default model
+    /// Helper to make a content generation request using the client's default model.
     pub async fn generate_content_with_defaults(
         &mut self,
         request: GenerateContentRequest,
@@ -363,7 +413,20 @@ impl GeminiClient {
         self.generate_content(&default_model, request).await
     }
 
-    // Simplified helper for text-only user prompts
+    /// Simplified helper for generating text from a single user prompt string.
+    ///
+    /// This method constructs a basic `GenerateContentRequest` for a user role
+    /// and extracts the text from the first candidate's first part in the response.
+    ///
+    /// # Arguments
+    ///
+    /// * `model`: The model to use.
+    /// * `prompt`: The user's text prompt.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GeminiClientError` on failure, including `NoContent` if the
+    /// response structure doesn't yield a text part as expected.
     pub async fn generate_text_from_user_prompt(
         &mut self,
         model: &str,
