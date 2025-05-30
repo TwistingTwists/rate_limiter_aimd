@@ -290,7 +290,6 @@ macro_rules! register {
     };
 }
 
-
 #[macro_export]
 macro_rules! assert_downcast_matches {
     ($e:expr, $t:ty, $v:pat) => {{

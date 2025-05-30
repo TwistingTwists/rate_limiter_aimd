@@ -8,12 +8,11 @@ use std::{
 };
 
 use futures::FutureExt;
-use http::StatusCode;
-use tokio::time::{Sleep, sleep};
+use tokio::time::{sleep, Sleep};
 use tower::{retry::Policy, timeout::error::Elapsed};
-// use vector_lib::configurable::configurable_component;
+use vector_lib::configurable::configurable_component;
 
-use crate::{Error, adaptive_concurrency::http::HttpError};
+use crate::Error;
 
 pub enum RetryAction {
     /// Indicate that this request should be retried with a reason
@@ -45,6 +44,7 @@ pub trait RetryLogic: Clone + Send + Sync + 'static {
 }
 
 /// The jitter mode to use for retry backoff behavior.
+#[configurable_component]
 #[derive(Clone, Copy, Debug, Default)]
 pub enum JitterMode {
     /// No jitter.
@@ -252,15 +252,6 @@ pub struct ExponentialBackoff {
 }
 
 impl ExponentialBackoff {
-    pub fn new(base: u64, factor: u64, max_delay: Option<Duration>) -> ExponentialBackoff {
-        ExponentialBackoff {
-            current: base,
-            base,
-            factor,
-            max_delay,
-        }
-    }
-
     /// Constructs a new exponential back-off strategy,
     /// given a base duration in milliseconds.
     ///
@@ -325,219 +316,6 @@ impl Iterator for ExponentialBackoff {
     }
 }
 
-// --- NEW: ExponentialBackoffPolicy ---
-
-#[derive(Clone, Debug)]
-pub struct ExponentialBackoffPolicy<L: RetryLogic> {
-    attempts_remaining: usize,
-    backoff_iterator: ExponentialBackoff,
-    max_total_retry_duration: Option<Duration>, // Optional: if you want to cap total time across retries
-    first_attempt_made: bool, // To ensure backoff_iterator.next() isn't called before the first retry
-    logic: L,
-    jitter_mode: JitterMode,
-}
-
-// Future for ExponentialBackoffPolicy
-pub struct ExponentialPolicyFuture<L: RetryLogic> {
-    delay: Pin<Box<Sleep>>,
-    policy_state_after_delay: ExponentialBackoffPolicy<L>,
-}
-
-impl<L: RetryLogic> ExponentialBackoffPolicy<L> {
-    pub fn new(
-        max_attempts: usize,
-        initial_backoff_iterator: ExponentialBackoff, // Already configured with initial, base, max_single_delay
-        logic: L,
-        jitter_mode: JitterMode,
-        max_total_retry_duration: Option<Duration>,
-    ) -> Self {
-        Self {
-            attempts_remaining: max_attempts,
-            backoff_iterator: initial_backoff_iterator,
-            max_total_retry_duration, // Not directly used by tower-retry's Policy, but useful for configuration
-            first_attempt_made: false,
-            logic,
-            jitter_mode,
-        }
-    }
-
-    fn build_retry_future(&self, delay_duration: Duration) -> ExponentialPolicyFuture<L> {
-        let mut next_policy_state = self.clone();
-        next_policy_state.attempts_remaining -= 1;
-        next_policy_state.first_attempt_made = true;
-        // The iterator for backoff_iterator itself is advanced when .next() is called to get delay_duration
-
-        debug!(
-            message = "Retrying request with exponential backoff.",
-            delay_ms = %delay_duration.as_millis(),
-            attempts_remaining = next_policy_state.attempts_remaining
-        );
-
-        ExponentialPolicyFuture {
-            delay: Box::pin(sleep(delay_duration)),
-            policy_state_after_delay: next_policy_state,
-        }
-    }
-
-    fn apply_jitter(&self, base_duration: Duration) -> Duration {
-        match self.jitter_mode {
-            JitterMode::None => base_duration,
-            JitterMode::Full => {
-                if base_duration.as_millis() == 0 {
-                    return Duration::from_millis(0);
-                }
-                // rand::random generates a value between 0.0 and 1.0
-                // Multiply by base_duration.as_millis() to get a random portion of the duration
-                let random_millis =
-                    (rand::random::<f64>() * base_duration.as_millis() as f64) as u64;
-                Duration::from_millis(random_millis)
-            }
-        }
-    }
-}
-
-impl<Req, Res, L> Policy<Req, Res, L::Error> for ExponentialBackoffPolicy<L>
-where
-    Req: Clone,
-    L: RetryLogic<Response = Res>, // L::Error requires std::error::Error
-{
-    type Future = ExponentialPolicyFuture<L>;
-
-    fn retry(&self, _request: &Req, result: Result<&Res, &L::Error>) -> Option<Self::Future> {
-        if self.attempts_remaining == 0 {
-            error!(message = "Max retry attempts reached; dropping request.", error_if_any=?result.err());
-            return None;
-        }
-
-        let should_retry_action = match result {
-            Ok(response) => self.logic.should_retry_response(response),
-            Err(service_error) => {
-                if self.logic.is_retriable_error(service_error) {
-                    RetryAction::Retry(Cow::Borrowed("Service error deemed retriable"))
-                } else {
-                    RetryAction::DontRetry(Cow::Borrowed("Service error deemed not retriable"))
-                }
-            }
-        };
-
-        match should_retry_action {
-            RetryAction::Retry(reason) => {
-                let mut current_backoff_iterator = self.backoff_iterator.clone(); // Clone to call next()
-                let base_delay = match current_backoff_iterator.next() {
-                    Some(delay) => delay,
-                    None => {
-                        // Iterator exhausted (e.g., if it had a max number of internal steps)
-                        warn!(message = "Exponential backoff iterator exhausted, but attempts remain. Not retrying.", %reason);
-                        return None;
-                    }
-                };
-                let jittered_delay = self.apply_jitter(base_delay);
-
-                warn!(message = "Retrying after response/error indicated retry needed.", %reason, base_delay_ms = base_delay.as_millis(), jittered_delay_ms = jittered_delay.as_millis());
-
-                let mut next_policy_state = self.clone();
-                next_policy_state.attempts_remaining = self.attempts_remaining.saturating_sub(1);
-                next_policy_state.backoff_iterator = current_backoff_iterator; // Store the advanced iterator
-
-                Some(ExponentialPolicyFuture {
-                    delay: Box::pin(sleep(jittered_delay)),
-                    policy_state_after_delay: next_policy_state,
-                })
-            }
-            RetryAction::DontRetry(reason) => {
-                error!(message = "Not retriable (from logic); dropping request.", %reason, error_if_any=?result.err());
-                None
-            }
-            RetryAction::Successful => None,
-        }
-    }
-
-    fn clone_request(&self, request: &Req) -> Option<Req> {
-        Some(request.clone())
-    }
-}
-
-// Safety: L is never pinned, and we use no unsafe pin projections.
-impl<L: RetryLogic> Unpin for ExponentialPolicyFuture<L> {}
-
-impl<L: RetryLogic> Future for ExponentialPolicyFuture<L> {
-    type Output = ExponentialBackoffPolicy<L>; // Return the next state of the policy
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        std::task::ready!(self.delay.poll_unpin(cx));
-        Poll::Ready(self.policy_state_after_delay.clone())
-    }
-}
-
-/// `DefaultReqwestRetryLogic` provides a default `RetryLogic` implementation
-/// for services using `reqwest`.
-#[derive(Clone, Debug, Default)]
-pub struct DefaultReqwestRetryLogic;
-
-impl RetryLogic for DefaultReqwestRetryLogic {
-    type Error = HttpError; // The error type produced by ReqwestService
-    type Response = HttpError; // The success type produced by ReqwestService
-
-    fn is_retriable_error(&self, error: &Self::Error) -> bool {
-        match error {
-            // Network-level errors are generally retryable
-            HttpError::Transport { .. } => true,
-            HttpError::Timeout => true,
-            // Specific server errors indicated via the error type itself
-            HttpError::ServerError { status, .. } => StatusCode::from_u16(*status)
-                .map(|s| s.is_server_error() || s == StatusCode::TOO_MANY_REQUESTS)
-                .unwrap_or(false),
-            // Errors during request building or client-side processing are typically not retryable
-            HttpError::BuildRequest { .. } => false,
-            HttpError::InvalidRequest { .. } => false,
-            HttpError::ClientError { .. } => false, // e.g., JSON decoding errors
-        }
-    }
-
-    fn should_retry_response(&self, error: &Self::Response) -> RetryAction {
-        match error {
-            HttpError::Transport { .. } => RetryAction::Retry(Cow::Borrowed("Transport error")),
-            HttpError::Timeout => RetryAction::Retry(Cow::Borrowed("Request timed out")),
-            HttpError::ServerError { status, body } => {
-                if let Ok(status) = StatusCode::from_u16(*status) {
-                    if status == StatusCode::TOO_MANY_REQUESTS || 
-                       status == StatusCode::SERVICE_UNAVAILABLE ||
-                       status.is_server_error() {
-                        RetryAction::Retry(Cow::Owned(format!(
-                            "Server error status {}: {}",
-                            status, body
-                        )))
-                    } else if status.is_client_error() {
-                        RetryAction::DontRetry(Cow::Owned(format!(
-                            "Client error status {}: {}",
-                            status, body
-                        )))
-                    } else {
-                        RetryAction::DontRetry(Cow::Owned(format!(
-                            "Unexpected status {}: {}",
-                            status, body
-                        )))
-                    }
-                } else {
-                    RetryAction::DontRetry(Cow::Owned(format!(
-                        "Invalid status code {}",
-                        status
-                    )))
-                }
-            },
-            HttpError::BuildRequest { details } => RetryAction::DontRetry(
-                Cow::Owned(format!("Request build error: {}", details))
-            ),
-            HttpError::InvalidRequest { details } => RetryAction::DontRetry(
-                Cow::Owned(format!("Invalid request: {}", details))
-            ),
-            HttpError::ClientError { source } => RetryAction::DontRetry(
-                Cow::Owned(format!("Client error: {}", source))
-            ),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{fmt, time::Duration};
@@ -548,11 +326,11 @@ mod tests {
     use tower_test::{assert_request_eq, mock};
 
     use super::*;
-    // use crate::test_util::trace_init;
+    use crate::test_util::trace_init;
 
     #[tokio::test]
     async fn service_error_retry() {
-        // trace_init();
+        trace_init();
 
         time::pause();
 
@@ -584,7 +362,7 @@ mod tests {
 
     #[tokio::test]
     async fn service_error_no_retry() {
-        // trace_init();
+        trace_init();
 
         let policy = FibonacciRetryPolicy::new(
             5,
@@ -605,7 +383,7 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_error() {
-        // trace_init();
+        trace_init();
 
         time::pause();
 

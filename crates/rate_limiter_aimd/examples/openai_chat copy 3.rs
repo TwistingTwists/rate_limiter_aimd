@@ -1,25 +1,25 @@
 // examples/openai_chat_adaptive_concurrency.rs
 
+use bytes::Bytes;
+use http::{Request as HttpRequest, StatusCode};
 use rate_limiter_aimd::{
+    Error as CrateError,
     adaptive_concurrency::{
         AdaptiveConcurrencySettings,
         http::HttpError as GenericHttpError,
         layer::AdaptiveConcurrencyLimitLayer,
         reqwest_integration::ReqwestService,
-        retries::{RetryAction, RetryLogic, FibonacciRetryPolicy, JitterMode},
+        retries::{FibonacciRetryPolicy, JitterMode, RetryAction, RetryLogic},
     },
-    Error as CrateError,
 };
-use http::{Request as HttpRequest, StatusCode};
 use reqwest::Response as ReqwestResponse;
-use std::{borrow::Cow, time::Duration, env};
-use tokio::time::sleep;
-use tower::{ServiceBuilder, Service, ServiceExt, retry::RetryLayer}; // Ensure RetryLayer is here
-use tracing::{info, warn, error, Level, debug}; // Added debug
 use serde_json::json;
-use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use std::{borrow::Cow, env, time::Duration};
+use tokio::time::sleep;
+use tower::{Service, ServiceBuilder, ServiceExt, retry::RetryLayer}; // Ensure RetryLayer is here
+use tracing::{Level, debug, error, info, warn}; // Added debug
 use tracing_appender;
-use bytes::Bytes; // <<< ADD THIS
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt}; // <<< ADD THIS
 
 // --- Configuration ---
 const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
@@ -37,7 +37,6 @@ const MAX_INDIVIDUAL_REQUEST_RETRIES: usize = 5;
 const INITIAL_RETRY_BACKOFF_SECS: u64 = 2; // Start with a slightly higher backoff
 const MAX_RETRY_BACKOFF_SECS: u64 = 30;
 
-
 // --- OpenAI Specific Retry Logic (remains the same) ---
 #[derive(Clone, Debug, Default)]
 struct OpenAIRetryLogic;
@@ -51,11 +50,11 @@ impl RetryLogic for OpenAIRetryLogic {
             GenericHttpError::Transport { source } => {
                 warn!(error_source=?source, "OpenAIRetryLogic: Retrying due to transport error");
                 true
-            },
+            }
             GenericHttpError::Timeout => {
                 warn!("OpenAIRetryLogic: Retrying due to timeout error.");
                 true
-            },
+            }
             GenericHttpError::ServerError { status, body } => {
                 let s = StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
                 if s.is_server_error() || s == StatusCode::TOO_MANY_REQUESTS {
@@ -68,7 +67,9 @@ impl RetryLogic for OpenAIRetryLogic {
                 }
             }
             // Explicitly non-retriable errors
-            GenericHttpError::InvalidRequest { .. } | GenericHttpError::BuildRequest { .. } | GenericHttpError::ClientError { .. }=> {
+            GenericHttpError::InvalidRequest { .. }
+            | GenericHttpError::BuildRequest { .. }
+            | GenericHttpError::ClientError { .. } => {
                 error!(full_error=?error, "OpenAIRetryLogic: Not retrying client-side/invalid request error");
                 false
             }
@@ -84,17 +85,25 @@ impl RetryLogic for OpenAIRetryLogic {
             || status.is_server_error()
         {
             warn!(%status, "OpenAIRetryLogic: Instructing to retry due to response status");
-            RetryAction::Retry(Cow::Owned(format!( "Server responded with status {}", status)))
+            RetryAction::Retry(Cow::Owned(format!(
+                "Server responded with status {}",
+                status
+            )))
         } else if status.is_client_error() {
             error!(%status, "OpenAIRetryLogic: Instructing not to retry due to client error status");
-            RetryAction::DontRetry(Cow::Owned(format!("Server responded with client error status {}", status)))
+            RetryAction::DontRetry(Cow::Owned(format!(
+                "Server responded with client error status {}",
+                status
+            )))
         } else {
             warn!(%status, "OpenAIRetryLogic: Instructing not to retry due to unhandled status");
-            RetryAction::DontRetry(Cow::Owned(format!("Server responded with unhandled status {}", status)))
+            RetryAction::DontRetry(Cow::Owned(format!(
+                "Server responded with unhandled status {}",
+                status
+            )))
         }
     }
 }
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
@@ -102,11 +111,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
     let (non_blocking_appender, _guard) = tracing_appender::non_blocking(file_appender);
 
     let default_filter = "info,rate_limiter_aimd::adaptive_concurrency::stats=debug";
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_filter));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
-    let console_layer = fmt::layer().with_writer(std::io::stdout).with_ansi(true).with_target(true).with_level(true);
-    let file_layer = fmt::layer().with_writer(non_blocking_appender).with_ansi(false).with_target(true).with_level(true);
+    let console_layer = fmt::layer()
+        .with_writer(std::io::stdout)
+        .with_ansi(true)
+        .with_target(true)
+        .with_level(true);
+    let file_layer = fmt::layer()
+        .with_writer(non_blocking_appender)
+        .with_ansi(false)
+        .with_target(true)
+        .with_level(true);
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -114,18 +131,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         .with(file_layer)
         .try_init()?;
 
-    info!("Tracing initialized. Default filter: '{}'. Logging to console and {}", default_filter, LOG_FILE_NAME);
+    info!(
+        "Tracing initialized. Default filter: '{}'. Logging to console and {}",
+        default_filter, LOG_FILE_NAME
+    );
     dotenvy::dotenv().ok();
     info!("Attempted to load .env file");
 
-    let api_key = env::var(OPENAI_API_KEY_ENV_VAR).map_err(|e| format!("Missing OpenAI API key env var: {}: {}", OPENAI_API_KEY_ENV_VAR, e))?;
-    let base_url = env::var(OPENAI_BASE_URL_ENV_VAR).unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string());
+    let api_key = env::var(OPENAI_API_KEY_ENV_VAR).map_err(|e| {
+        format!(
+            "Missing OpenAI API key env var: {}: {}",
+            OPENAI_API_KEY_ENV_VAR, e
+        )
+    })?;
+    let base_url =
+        env::var(OPENAI_BASE_URL_ENV_VAR).unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string());
     let chat_completions_url = format!("{}{}", base_url, CHAT_COMPLETIONS_PATH);
-    let model_name = env::var(OPENAI_MODEL_NAME_ENV_VAR).unwrap_or_else(|_| DEFAULT_MODEL_NAME.to_string());
+    let model_name =
+        env::var(OPENAI_MODEL_NAME_ENV_VAR).unwrap_or_else(|_| DEFAULT_MODEL_NAME.to_string());
 
     info!(target: "config", api_endpoint = %chat_completions_url, model = %model_name, api_key_prefix = %api_key[..std::cmp::min(8, api_key.len())]);
 
-    let reqwest_client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?;
+    let reqwest_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?;
     let reqwest_service = ReqwestService::new_with_client(reqwest_client);
 
     let ac_settings = AdaptiveConcurrencySettings::builder()
@@ -168,8 +197,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         .layer(concurrency_layer)
         .service(retrying_reqwest_service);
 
-
-    info!("Service initialized. Starting to send {} prompts...", NUM_PROMPTS_TO_SEND);
+    info!(
+        "Service initialized. Starting to send {} prompts...",
+        NUM_PROMPTS_TO_SEND
+    );
     let mut join_handles = Vec::new();
     let prompts: Vec<String> = (0..NUM_PROMPTS_TO_SEND)
         .map(|i| format!("This is test prompt number {}. Please provide a short, concise answer about a random topic. Keep it under 30 words.", i + 1))
@@ -189,10 +220,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
             });
 
             // VVV USE Bytes FOR BODY VVV
-            let body_bytes = Bytes::from(serde_json::to_vec(&request_payload)
-                .map_err(|e| CrateError::from(format!("[T{}] PayloadErr: {}", task_id, e)))?);
+            let body_bytes = Bytes::from(
+                serde_json::to_vec(&request_payload)
+                    .map_err(|e| CrateError::from(format!("[T{}] PayloadErr: {}", task_id, e)))?,
+            );
 
-            let http_request = HttpRequest::builder().method("POST").uri(url_clone.as_str())
+            let http_request = HttpRequest::builder()
+                .method("POST")
+                .uri(url_clone.as_str())
                 .header("Authorization", format!("Bearer {}", key_clone))
                 .header("Content-Type", "application/json")
                 .body(Some(body_bytes)) // Pass Option<Bytes>
@@ -201,8 +236,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
             debug!("[T{}] Waiting for service readiness...", task_id);
             // The error from cloned_service.ready() is CrateError due to ACL's mapping
             if let Err(e) = cloned_service.ready().await {
-                 let err_msg = format!("[T{}] NotReady: {:?}", task_id, e);
-                 error!("{}", err_msg); return Err(CrateError::from(err_msg)); // Ensure CrateError is returned
+                let err_msg = format!("[T{}] NotReady: {:?}", task_id, e);
+                error!("{}", err_msg);
+                return Err(CrateError::from(err_msg)); // Ensure CrateError is returned
             }
 
             info!("[T{}] Calling service...", task_id);
@@ -210,11 +246,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
             match cloned_service.call(http_request).await {
                 Ok(response) => {
                     let status = response.status();
-                    let response_body_text = response.text().await.unwrap_or_else(|e| format!("ErrReadBody: {}", e));
+                    let response_body_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|e| format!("ErrReadBody: {}", e));
                     if status.is_success() {
-                        info!("[T{}] SUCCESS: {} Body: {:.60}...", task_id, status, response_body_text.trim().replace('\n', " "));
+                        info!(
+                            "[T{}] SUCCESS: {} Body: {:.60}...",
+                            task_id,
+                            status,
+                            response_body_text.trim().replace('\n', " ")
+                        );
                     } else {
-                        warn!("[T{}] API_ERR_FINAL: {} Body: {}", task_id, status, response_body_text); // Final API error after retries
+                        warn!(
+                            "[T{}] API_ERR_FINAL: {} Body: {}",
+                            task_id, status, response_body_text
+                        ); // Final API error after retries
                     }
                 }
                 Err(e) => error!("[T{}] SVC_ERR_FINAL: {:?}", task_id, e), // Final service error after retries
@@ -222,7 +269,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
             Ok::<(), CrateError>(())
         });
         join_handles.push(handle);
-        if REQUEST_INTERVAL_MS > 0 { sleep(Duration::from_millis(REQUEST_INTERVAL_MS)).await; }
+        if REQUEST_INTERVAL_MS > 0 {
+            sleep(Duration::from_millis(REQUEST_INTERVAL_MS)).await;
+        }
     }
 
     for (idx, handle) in join_handles.into_iter().enumerate() {
@@ -232,6 +281,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
             Err(e) => error!("[Main] Task {} panicked/cancelled: {:?}", idx, e),
         }
     }
-    info!("All {} prompts processed. Check {} for logs.", NUM_PROMPTS_TO_SEND, LOG_FILE_NAME);
+    info!(
+        "All {} prompts processed. Check {} for logs.",
+        NUM_PROMPTS_TO_SEND, LOG_FILE_NAME
+    );
     Ok(())
 }

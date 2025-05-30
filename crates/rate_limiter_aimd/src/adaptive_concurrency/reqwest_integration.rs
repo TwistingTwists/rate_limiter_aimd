@@ -8,13 +8,13 @@ use futures::future::BoxFuture; // Optional: use if converting reqwest::Error to
 // Let's assume it's defined elsewhere (e.g., in retries.rs as previously discussed) for better separation.
 // use super::retries::DefaultReqwestRetryLogic;
 
+use bytes::Bytes;
 use http::{Request as HttpRequest, StatusCode};
 use reqwest;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tower::Service;
-use bytes::Bytes;
 
 /// A `tower::Service` wrapper for `reqwest::Client`.
 /// Accepts `http::Request<Option<bytes::Bytes>>`.

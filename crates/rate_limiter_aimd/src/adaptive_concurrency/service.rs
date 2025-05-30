@@ -138,14 +138,14 @@ mod tests {
     use tower_test::{
         assert_request_eq,
         mock::{
-            self, future::ResponseFuture as MockResponseFuture, Handle, Mock, SendResponse, Spawn,
+            self, Handle, Mock, SendResponse, Spawn, future::ResponseFuture as MockResponseFuture,
         },
     };
 
     use super::{
         super::{
-            controller::{ControllerStatistics, Inner},
             AdaptiveConcurrencyLimitLayer,
+            controller::{ControllerStatistics, Inner},
         },
         *,
     };

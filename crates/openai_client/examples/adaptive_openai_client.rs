@@ -1,18 +1,19 @@
-use openai_client::{ // Or your crate name
+use openai_client::{
+    ChatCompletionRequest,
+    ChatMessage,
+    // Or your crate name
     OpenAIClient,
     OpenAIClientConfig,
-    ChatMessage,
-    ChatCompletionRequest,
 };
 
 use rate_limiter_aimd::adaptive_concurrency::AdaptiveConcurrencySettings; // Fix the import to use the correct crate for adaptive_concurrency
 
-use tokio;
-use tracing::{info, warn};
-use tracing_subscriber;
 use std::env;
 use std::str::FromStr; // For parsing strings to numbers
 use std::time::Duration;
+use tokio;
+use tracing::{info, warn};
+use tracing_subscriber;
 
 // --- Configuration Environment Variable Names ---
 const ENV_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
@@ -24,7 +25,7 @@ const ENV_USER_AGENT: &str = "OPENAI_CLIENT_USER_AGENT";
 const ENV_AC_INITIAL_CONCURRENCY: &str = "AC_INITIAL_CONCURRENCY";
 const ENV_AC_MAX_CONCURRENCY_LIMIT: &str = "AC_MAX_CONCURRENCY_LIMIT";
 const ENV_AC_DECREASE_RATIO: &str = "AC_DECREASE_RATIO"; // f64
-const ENV_AC_EWMA_ALPHA: &str = "AC_EWMA_ALPHA";         // f64
+const ENV_AC_EWMA_ALPHA: &str = "AC_EWMA_ALPHA"; // f64
 const ENV_AC_RTT_DEVIATION_SCALE: &str = "AC_RTT_DEVIATION_SCALE"; // f64
 
 // Retry Settings
@@ -53,7 +54,6 @@ where
         .unwrap_or(default_value)
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     // Initialize tracing (same as before)
@@ -61,23 +61,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
     tracing_subscriber::fmt()
         .with_env_filter(env::var("RUST_LOG").unwrap_or_else(|_| default_log_filter.to_string()))
         .init();
-    info!("Tracing initialized. RUST_LOG or default '{}' is active.", default_log_filter);
+    info!(
+        "Tracing initialized. RUST_LOG or default '{}' is active.",
+        default_log_filter
+    );
 
     // Load .env file if present
     if dotenvy::dotenv().is_ok() {
         info!(".env file loaded successfully.");
     } else {
-        info!("No .env file found or failed to load. Proceeding with environment variables or defaults.");
+        info!(
+            "No .env file found or failed to load. Proceeding with environment variables or defaults."
+        );
     }
 
-    let api_key = env::var(ENV_OPENAI_API_KEY)
-        .map_err(|_| format!("Required environment variable '{}' not set", ENV_OPENAI_API_KEY))?;
+    let api_key = env::var(ENV_OPENAI_API_KEY).map_err(|_| {
+        format!(
+            "Required environment variable '{}' not set",
+            ENV_OPENAI_API_KEY
+        )
+    })?;
 
     // --- Populate OpenAIClientConfig from environment variables or defaults ---
     let default_config = OpenAIClientConfig::default(); // Get default values
 
-    let ac_initial_concurrency = get_env_var(ENV_AC_INITIAL_CONCURRENCY, default_config.adaptive_concurrency.get_initial_concurrency());
-    let ac_max_concurrency_limit = get_env_var(ENV_AC_MAX_CONCURRENCY_LIMIT, default_config.adaptive_concurrency.get_max_concurrency_limit());
+    let ac_initial_concurrency = get_env_var(
+        ENV_AC_INITIAL_CONCURRENCY,
+        default_config
+            .adaptive_concurrency
+            .get_initial_concurrency(),
+    );
+    let ac_max_concurrency_limit = get_env_var(
+        ENV_AC_MAX_CONCURRENCY_LIMIT,
+        default_config
+            .adaptive_concurrency
+            .get_max_concurrency_limit(),
+    );
     // For f64, we need to be careful if default_config.adaptive_concurrency doesn't have direct getters for these
     // Assuming AdaptiveConcurrencySettings has getters or we use its builder's defaults
     let ac_builder_defaults = AdaptiveConcurrencySettings::builder().build(); // to get builder defaults
@@ -89,9 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         // .ewma_alpha(get_env_var(ENV_AC_EWMA_ALPHA, ac_builder_defaults.ewma_alpha))
         // .rtt_deviation_scale(get_env_var(ENV_AC_RTT_DEVIATION_SCALE, ac_builder_defaults.rtt_deviation_scale))
         .build();
-    
-    info!(target: "config_loading", ?ac_settings);
 
+    info!(target: "config_loading", ?ac_settings);
 
     let config = OpenAIClientConfig {
         api_key,
@@ -101,23 +119,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         reqwest_client: None, // Keep as None to use client's default, or add env vars for timeout etc.
         adaptive_concurrency: ac_settings,
         retry_max_attempts: get_env_var(ENV_RETRY_MAX_ATTEMPTS, default_config.retry_max_attempts),
-        retry_initial_backoff_ms: get_env_var(ENV_RETRY_INITIAL_BACKOFF_MS, default_config.retry_initial_backoff_ms),
+        retry_initial_backoff_ms: get_env_var(
+            ENV_RETRY_INITIAL_BACKOFF_MS,
+            default_config.retry_initial_backoff_ms,
+        ),
         retry_exp_base: get_env_var(ENV_RETRY_EXP_BASE, default_config.retry_exp_base),
-        retry_max_single_delay_secs: get_env_var(ENV_RETRY_MAX_SINGLE_DELAY_SECS, default_config.retry_max_single_delay_secs),
+        retry_max_single_delay_secs: get_env_var(
+            ENV_RETRY_MAX_SINGLE_DELAY_SECS,
+            default_config.retry_max_single_delay_secs,
+        ),
     };
 
     info!(target: "config_final", client_config = ?config, "OpenAIClient configuration loaded.");
-
 
     let mut client = OpenAIClient::new(config)?;
 
     // --- First example call (default model) ---
     let messages1 = vec![
-        ChatMessage { role: "system".to_string(), content: "You are a concise assistant.".to_string()},
-        ChatMessage { role: "user".to_string(), content: "What is the color of the sky on a clear day?".to_string()},
+        ChatMessage {
+            role: "system".to_string(),
+            content: "You are a concise assistant.".to_string(),
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: "What is the color of the sky on a clear day?".to_string(),
+        },
     ];
     info!("Sending request with default model...");
-    match client.chat_completion_with_messages(messages1.clone()).await {
+    match client
+        .chat_completion_with_messages(messages1.clone())
+        .await
+    {
         Ok(response) => {
             if let Some(choice) = response.choices.first() {
                 println!("Assistant (default model): {}", choice.message.content);
@@ -131,11 +163,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
     // --- Second example call (specific request) ---
     let specific_request = ChatCompletionRequest {
         model: client.config.default_model.clone(), // Using the (potentially env-configured) default model
-        messages: messages1, // Re-use messages
+        messages: messages1,                        // Re-use messages
         temperature: Some(0.7),
         max_tokens: Some(150),
     };
-    info!("Sending specific request (model: {})...", specific_request.model);
+    info!(
+        "Sending specific request (model: {})...",
+        specific_request.model
+    );
     match client.chat_completion(specific_request).await {
         Ok(response) => {
             if let Some(choice) = response.choices.first() {
@@ -146,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         }
         Err(e) => eprintln!("Error with specific model request: {}", e),
     }
-    
+
     // --- Example of concurrent requests ---
     let num_concurrent_tasks = 20;
     info!("Spawning {} concurrent tasks...", num_concurrent_tasks);
@@ -154,18 +189,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
     for i in 0..num_concurrent_tasks {
         let mut client_clone = client.clone(); // Client is Clone
         tasks.push(tokio::spawn(async move {
-            let messages = vec![
-                 ChatMessage { role: "user".to_string(), content: format!("Briefly explain concept #{} for a five-year-old in one sentence.", i) },
-            ];
+            let messages = vec![ChatMessage {
+                role: "user".to_string(),
+                content: format!(
+                    "Briefly explain concept #{} for a five-year-old in one sentence.",
+                    i
+                ),
+            }];
             match client_clone.chat_completion_with_messages(messages).await {
-                Ok(res) => println!("[Task {}] SUCCESS: {:.80}...",i, res.choices.first().map(|c| c.message.content.replace('\n', " ")).unwrap_or_default()),
+                Ok(res) => println!(
+                    "[Task {}] SUCCESS: {:.80}...",
+                    i,
+                    res.choices
+                        .first()
+                        .map(|c| c.message.content.replace('\n', " "))
+                        .unwrap_or_default()
+                ),
                 Err(e) => eprintln!("[Task {}] ERROR: {}", i, e),
             }
         }));
         // Stagger spawning slightly to avoid thundering herd on the service.ready() of the very first calls
         // The adaptive limiter will handle the actual concurrency.
-        if i < 5 { // Only stagger the first few
-             tokio::time::sleep(Duration::from_millis(50)).await;
+        if i < 5 {
+            // Only stagger the first few
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
     for (i, task) in tasks.into_iter().enumerate() {

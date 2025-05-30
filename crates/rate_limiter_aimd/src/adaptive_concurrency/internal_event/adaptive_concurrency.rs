@@ -1,6 +1,6 @@
-use std::time::Duration;
 use crate::registered_event;
 use metrics::{Histogram, histogram};
+use std::time::Duration;
 use tracing;
 
 #[derive(Clone, Copy, Debug)]

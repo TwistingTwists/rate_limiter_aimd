@@ -18,10 +18,10 @@ use crate::{
 use tracing::instrument;
 
 use super::{
-    retries::ExponentialBackoff,
     AdaptiveConcurrencySettings,
     http::HttpError,
     instant_now,
+    retries::ExponentialBackoff,
     retries::{RetryAction, RetryLogic},
     semaphore::ShrinkableSemaphore,
     stats::{EwmaVar, Mean, MeanVariance},
@@ -302,7 +302,7 @@ where
     //     }
     // }
 
-    #[instrument(skip(self))]
+    // #[instrument(skip(self))]
     pub(super) fn adjust_to_response(
         &self,
         start: Instant,

@@ -1,6 +1,8 @@
 // examples/openai_chat_adaptive_concurrency.rs
 
+use http::{Request as HttpRequest, StatusCode};
 use rate_limiter_aimd::{
+    Error as CrateError, // Assuming Error is pub from lib.rs
     adaptive_concurrency::{
         AdaptiveConcurrencySettings,
         http::HttpError as GenericHttpError,
@@ -8,15 +10,13 @@ use rate_limiter_aimd::{
         reqwest_integration::ReqwestService,
         retries::{RetryAction, RetryLogic},
     },
-    Error as CrateError, // Assuming Error is pub from lib.rs
 };
-use http::{Request as HttpRequest, StatusCode};
 use reqwest::Response as ReqwestResponse;
-use std::{borrow::Cow, time::Duration, env};
+use serde_json::json;
+use std::{borrow::Cow, env, time::Duration};
 use tokio::time::sleep;
-use tower::{ServiceBuilder, Service, ServiceExt};
-use tracing::{info, warn, error}; // Added warn and error
-use serde_json::json; // For constructing JSON payload
+use tower::{Service, ServiceBuilder, ServiceExt};
+use tracing::{error, info, warn}; // Added warn and error // For constructing JSON payload
 
 // --- Configuration ---
 const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
@@ -40,25 +40,37 @@ impl RetryLogic for OpenAIRetryLogic {
     fn is_retriable_error(&self, error: &Self::Error) -> bool {
         match error {
             GenericHttpError::Transport { source } => {
-                warn!("OpenAIRetryLogic: Retrying due to transport error: {:?}", source);
+                warn!(
+                    "OpenAIRetryLogic: Retrying due to transport error: {:?}",
+                    source
+                );
                 true
-            },
+            }
             GenericHttpError::Timeout => {
                 warn!("OpenAIRetryLogic: Retrying due to timeout error.");
                 true
-            },
+            }
             GenericHttpError::ServerError { status, body } => {
                 let s = StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
                 if s.is_server_error() || s == StatusCode::TOO_MANY_REQUESTS {
-                    warn!("OpenAIRetryLogic: Retrying due to server error status {} (Body: {:.100}): {:?}", status, body, error);
+                    warn!(
+                        "OpenAIRetryLogic: Retrying due to server error status {} (Body: {:.100}): {:?}",
+                        status, body, error
+                    );
                     true
                 } else {
-                    error!("OpenAIRetryLogic: Not retrying server error status {} (Body: {:.100}): {:?}", status, body, error);
+                    error!(
+                        "OpenAIRetryLogic: Not retrying server error status {} (Body: {:.100}): {:?}",
+                        status, body, error
+                    );
                     false
                 }
             }
             _ => {
-                error!("OpenAIRetryLogic: Not retrying non-server/transport/timeout error: {:?}", error);
+                error!(
+                    "OpenAIRetryLogic: Not retrying non-server/transport/timeout error: {:?}",
+                    error
+                );
                 false
             }
         }
@@ -70,21 +82,29 @@ impl RetryLogic for OpenAIRetryLogic {
             RetryAction::Successful
         } else if status == StatusCode::TOO_MANY_REQUESTS
             || status == StatusCode::SERVICE_UNAVAILABLE
-            || status.is_server_error() // Any 5xx
+            || status.is_server_error()
+        // Any 5xx
         {
             warn!("OpenAIRetryLogic: Retrying due to status: {}", status);
             RetryAction::Retry(Cow::Owned(format!(
                 "Server responded with status {}",
                 status
             )))
-        } else if status.is_client_error() { // 4xx errors that are not TOO_MANY_REQUESTS
-            error!("OpenAIRetryLogic: Not retrying due to client error status: {}", status);
+        } else if status.is_client_error() {
+            // 4xx errors that are not TOO_MANY_REQUESTS
+            error!(
+                "OpenAIRetryLogic: Not retrying due to client error status: {}",
+                status
+            );
             RetryAction::DontRetry(Cow::Owned(format!(
                 "Server responded with client error status {}",
                 status
             )))
         } else {
-            warn!("OpenAIRetryLogic: Not retrying due to unhandled status: {}", status);
+            warn!(
+                "OpenAIRetryLogic: Not retrying due to unhandled status: {}",
+                status
+            );
             RetryAction::DontRetry(Cow::Owned(format!(
                 "Server responded with unhandled status {}",
                 status
@@ -93,35 +113,41 @@ impl RetryLogic for OpenAIRetryLogic {
     }
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     // Initialize tracing
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
+        )
         .init();
 
     // Load .env file if present
     dotenvy::dotenv().ok();
 
     // --- Get API Key ---
-    let api_key = env::var(OPENAI_API_KEY_ENV_VAR)
-        .map_err(|_| format!("Missing OpenAI API key environment variable: {}", OPENAI_API_KEY_ENV_VAR))?;
+    let api_key = env::var(OPENAI_API_KEY_ENV_VAR).map_err(|_| {
+        format!(
+            "Missing OpenAI API key environment variable: {}",
+            OPENAI_API_KEY_ENV_VAR
+        )
+    })?;
 
     // --- Get Base URL for the API ---
-    let base_url = env::var(OPENAI_BASE_URL_ENV_VAR)
-        .unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string());
+    let base_url =
+        env::var(OPENAI_BASE_URL_ENV_VAR).unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string());
     let chat_completions_url = format!("{}{}", base_url, CHAT_COMPLETIONS_PATH);
 
     // --- Get Model Name ---
-    let model_name = env::var(OPENAI_MODEL_NAME_ENV_VAR)
-        .unwrap_or_else(|_| DEFAULT_MODEL_NAME.to_string());
-
+    let model_name =
+        env::var(OPENAI_MODEL_NAME_ENV_VAR).unwrap_or_else(|_| DEFAULT_MODEL_NAME.to_string());
 
     info!("Using API endpoint: {}", chat_completions_url);
     info!("Using Model: {}", model_name);
-    info!("Using API key: {}...", &api_key[..std::cmp::min(8, api_key.len())]);
-
+    info!(
+        "Using API key: {}...",
+        &api_key[..std::cmp::min(8, api_key.len())]
+    );
 
     // --- Setup Reqwest Client and Service ---
     let reqwest_client = reqwest::Client::builder()
@@ -131,11 +157,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 
     // --- Setup Adaptive Concurrency ---
     let ac_settings = AdaptiveConcurrencySettings::builder()
-        .initial_concurrency(2)       // Start with 2 concurrent requests
-        .max_concurrency_limit(15)    // Allow up to 15 concurrent requests
-        .ewma_alpha(0.3)              // Standard EWMA alpha
-        .decrease_ratio(0.85)         // Decrease concurrency by 15% on backpressure
-        .rtt_deviation_scale(2.0)     // Standard RTT deviation scale
+        .initial_concurrency(2) // Start with 2 concurrent requests
+        .max_concurrency_limit(15) // Allow up to 15 concurrent requests
+        .ewma_alpha(0.3) // Standard EWMA alpha
+        .decrease_ratio(0.85) // Decrease concurrency by 15% on backpressure
+        .rtt_deviation_scale(2.0) // Standard RTT deviation scale
         .build();
 
     let openai_retry_logic = OpenAIRetryLogic::default();
@@ -151,7 +177,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         .layer(concurrency_layer)
         .service(reqwest_service);
 
-    info!("Service initialized. Starting to send {} prompts...", NUM_PROMPTS_TO_SEND);
+    info!(
+        "Service initialized. Starting to send {} prompts...",
+        NUM_PROMPTS_TO_SEND
+    );
 
     let mut join_handles = Vec::new();
 
@@ -167,7 +196,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         let task_id = i;
 
         let handle = tokio::spawn(async move {
-            info!("[Task {}] Preparing request to {} with prompt: \"{:.30}...\"", task_id, url_clone, prompt_content);
+            info!(
+                "[Task {}] Preparing request to {} with prompt: \"{:.30}...\"",
+                task_id, url_clone, prompt_content
+            );
 
             let request_payload = json!({
                 "model": model_clone,
@@ -178,8 +210,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
                 "temperature": 0.7
             });
 
-            let body_bytes = serde_json::to_vec(&request_payload)
-                .map_err(|e| CrateError::from(format!("[Task {}] Failed to serialize payload: {}", task_id, e)))?;
+            let body_bytes = serde_json::to_vec(&request_payload).map_err(|e| {
+                CrateError::from(format!(
+                    "[Task {}] Failed to serialize payload: {}",
+                    task_id, e
+                ))
+            })?;
             let body = reqwest::Body::from(body_bytes);
 
             let http_request = HttpRequest::builder()
@@ -188,26 +224,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
                 .header("Authorization", format!("Bearer {}", key_clone))
                 .header("Content-Type", "application/json")
                 .body(Some(body))
-                .map_err(|e| CrateError::from(format!("[Task {}] Failed to build request: {}", task_id, e)))?;
+                .map_err(|e| {
+                    CrateError::from(format!("[Task {}] Failed to build request: {}", task_id, e))
+                })?;
 
             info!("[Task {}] Waiting for service readiness...", task_id);
             // The error type from poll_ready needs to be mapped if it's not already CrateError
             if let Err(e) = cloned_service.ready().await {
-                 let err_msg = format!("[Task {}] Service not ready: {:?}", task_id, e);
-                 error!("{}", err_msg);
-                 return Err(CrateError::from(err_msg));
+                let err_msg = format!("[Task {}] Service not ready: {:?}", task_id, e);
+                error!("{}", err_msg);
+                return Err(CrateError::from(err_msg));
             }
-
 
             info!("[Task {}] Calling service...", task_id);
             match cloned_service.call(http_request).await {
                 Ok(response) => {
                     let status = response.status();
-                    let response_body_text = response.text().await.unwrap_or_else(|_| String::from("Error reading response body"));
+                    let response_body_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| String::from("Error reading response body"));
                     if status.is_success() {
-                        info!("[Task {}] SUCCESS: Status {}, Body: {:.100}...", task_id, status, response_body_text.trim().replace('\n', " "));
+                        info!(
+                            "[Task {}] SUCCESS: Status {}, Body: {:.100}...",
+                            task_id,
+                            status,
+                            response_body_text.trim().replace('\n', " ")
+                        );
                     } else {
-                        warn!("[Task {}] API_ERROR: Status {}, Body: {}", task_id, status, response_body_text);
+                        warn!(
+                            "[Task {}] API_ERROR: Status {}, Body: {}",
+                            task_id, status, response_body_text
+                        );
                     }
                 }
                 Err(e) => {
@@ -226,7 +274,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
     for (idx, handle) in join_handles.into_iter().enumerate() {
         match handle.await {
             Ok(Ok(_)) => info!("[Main] Task {} completed successfully.", idx),
-            Ok(Err(e)) => error!("[Main] Task {} completed with an application error: {:?}", idx, e),
+            Ok(Err(e)) => error!(
+                "[Main] Task {} completed with an application error: {:?}",
+                idx, e
+            ),
             Err(e) => error!("[Main] Task {} panicked or was cancelled: {:?}", idx, e),
         }
     }

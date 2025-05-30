@@ -11,8 +11,9 @@ use tower::retry::Retry; // Corrected import: Removed non-existent 'Error as Ret
 use tower::{Service, ServiceBuilder};
 use url::Url;
 
-use rate_limiter_aimd::adaptive_concurrency::http::HttpError as GenericHttpError;
 use rate_limiter_aimd::Error as RateLimiterError; // Import the error type
+use rate_limiter_aimd::adaptive_concurrency::AdaptiveConcurrencySettings;
+use rate_limiter_aimd::adaptive_concurrency::http::HttpError as GenericHttpError;
 use rate_limiter_aimd::adaptive_concurrency::layer::AdaptiveConcurrencyLimitLayer;
 use rate_limiter_aimd::adaptive_concurrency::reqwest_integration::ReqwestService;
 use rate_limiter_aimd::adaptive_concurrency::retries::{
@@ -20,7 +21,6 @@ use rate_limiter_aimd::adaptive_concurrency::retries::{
     RetryAction, RetryLogic,
 };
 use rate_limiter_aimd::adaptive_concurrency::service::AdaptiveConcurrencyLimit;
-use rate_limiter_aimd::adaptive_concurrency::AdaptiveConcurrencySettings;
 
 // --- Constants ---
 const DEFAULT_GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -43,9 +43,7 @@ pub enum GeminiClientError {
     Reqwest { source: reqwest::Error },
 
     #[snafu(display("Error from adaptive concurrency limiter: {source}"))]
-    AdaptiveConcurrency {
-        source: RateLimiterError,
-    },
+    AdaptiveConcurrency { source: RateLimiterError },
 
     #[snafu(display("HTTP error: {source}"))]
     Http { source: GenericHttpError },
@@ -170,7 +168,6 @@ pub enum HarmBlockThreshold {
     BlockNone,
 }
 
-
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateContentResponse {
@@ -207,16 +204,12 @@ pub struct PromptFeedback {
     pub safety_ratings: Vec<SafetyRating>,
 }
 
-
 // --- Gemini Client ---
 /// Represents the underlying HTTP client service stack, including adaptive concurrency,
 /// retries, and the base Reqwest service.
 type HttpClientService = AdaptiveConcurrencyLimit<
-    Retry<
-        ExponentialBackoffPolicy<DefaultReqwestRetryLogic>,
-        ReqwestService,
-    >,
-    DefaultReqwestRetryLogic, // This is the L for AdaptiveConcurrencyLimit
+    Retry<ExponentialBackoffPolicy<GeminiRetryLogic>, ReqwestService>,
+    GeminiRetryLogic, // This is the L for AdaptiveConcurrencyLimit
 >;
 
 #[derive(Clone)]
@@ -237,7 +230,7 @@ impl Debug for GeminiClient {
         f.debug_struct("GeminiClient")
             .field("config", &self.config)
             // service is not Debug, and other fields are derived from config or internal
-            .finish_non_exhaustive() 
+            .finish_non_exhaustive()
     }
 }
 
@@ -278,16 +271,17 @@ impl GeminiClient {
                 config.retry_exp_base,
                 Some(Duration::from_secs(config.retry_max_single_delay_secs)),
             ),
-            DefaultReqwestRetryLogic::default(), // Replace with Gemini specific if needed
-            JitterMode::Full, // Recommended for better distribution
-            None, // No max total retry duration by default
+            GeminiRetryLogic::default(),
+            JitterMode::Full,                    // Recommended for better distribution
+            None,                                // No max total retry duration by default
         );
 
         let service = ServiceBuilder::new()
-            .layer(AdaptiveConcurrencyLimitLayer::new( // ACL is now outermost over Retry
+            .layer(AdaptiveConcurrencyLimitLayer::new(
+                // ACL is now outermost over Retry
                 None, // Use default initial concurrency from settings
                 config.adaptive_concurrency.clone(),
-                DefaultReqwestRetryLogic::default(), // Logic for ACL itself
+                GeminiRetryLogic::default(), // Logic for ACL itself
             ))
             .retry(retry_policy) // Retry layer wraps the base_service directly
             .service(base_service);
@@ -313,16 +307,19 @@ impl GeminiClient {
         // If endpoint_url is "https://.../models", its path is "/models".
         // After push, path becomes "/models/gemini-pro:generateContent".
         // path_segments_mut() handles the logic of adding slashes correctly.
-        endpoint_url.path_segments_mut()
+        endpoint_url
+            .path_segments_mut()
             .map_err(|_| GeminiClientError::BaseUrlCannotHavePathSegments {
                 url: self.config.base_url.clone(),
             })?
             .push(&model_action_path_segment);
-        
+
         tracing::debug!(target: "gemini_client", url_after_path_append = %endpoint_url, "URL after appending path segment");
 
         // Add the API key as a query parameter.
-        endpoint_url.query_pairs_mut().append_pair("key", &self.config.api_key);
+        endpoint_url
+            .query_pairs_mut()
+            .append_pair("key", &self.config.api_key);
         tracing::info!(target: "gemini_client", final_url = %endpoint_url, "Final endpoint URL with API key");
 
         Ok(endpoint_url)
@@ -385,12 +382,20 @@ impl GeminiClient {
             // Try to parse as Google API Error if possible, otherwise generic
             // Google API errors often look like: {"error": {"code": 400, "message": "API key not valid...", "status": "INVALID_ARGUMENT"}}
             #[derive(Deserialize)]
-            struct GoogleApiErrorWrapper { error: GoogleApiError }
+            struct GoogleApiErrorWrapper {
+                error: GoogleApiError,
+            }
             #[derive(Deserialize)]
-            struct GoogleApiError { code: u16, message: String, status: Option<String> }
+            struct GoogleApiError {
+                code: u16,
+                message: String,
+                status: Option<String>,
+            }
 
-            if let Ok(google_error_wrapper) = serde_json::from_slice::<GoogleApiErrorWrapper>(&response_body) {
-                 Err(GeminiClientError::ApiError {
+            if let Ok(google_error_wrapper) =
+                serde_json::from_slice::<GoogleApiErrorWrapper>(&response_body)
+            {
+                Err(GeminiClientError::ApiError {
                     code: google_error_wrapper.error.code,
                     message: google_error_wrapper.error.message,
                 })
@@ -398,7 +403,10 @@ impl GeminiClient {
                 let error_message = String::from_utf8_lossy(&response_body).into_owned();
                 Err(GeminiClientError::ApiError {
                     code: status.as_u16(),
-                    message: format!("Gemini API request failed with status {}: {}", status, error_message),
+                    message: format!(
+                        "Gemini API request failed with status {}: {}",
+                        status, error_message
+                    ),
                 })
             }
         }
@@ -441,8 +449,9 @@ impl GeminiClient {
             safety_settings: None,
         };
         let response = self.generate_content(model, request).await?;
-        
-        response.candidates
+
+        response
+            .candidates
             .and_then(|mut c| c.pop())
             .and_then(|cand| cand.content)
             .and_then(|con| con.parts)
@@ -463,16 +472,20 @@ impl RetryLogic for GeminiRetryLogic {
 
     fn is_retriable_error(&self, error: &Self::Error) -> bool {
         // Same as DefaultReqwestRetryLogic or customize
-        matches!(error, GenericHttpError::Transport { .. } | GenericHttpError::Timeout)
+        matches!(
+            error,
+            GenericHttpError::Transport { .. } | GenericHttpError::Timeout
+        )
     }
 
     fn should_retry_response(&self, response: &Self::Response) -> RetryAction {
         let status = response.status();
         if status.is_success() {
             RetryAction::Successful
-        } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS ||
-                  status == reqwest::StatusCode::SERVICE_UNAVAILABLE ||
-                  status.is_server_error() {
+        } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            || status.is_server_error()
+        {
             RetryAction::Retry(std::borrow::Cow::Owned(format!(
                 "Server responded with status {}",
                 status

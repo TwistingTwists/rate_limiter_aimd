@@ -1,6 +1,8 @@
 // examples/openai_adaptive_concurrency.rs
 
+use http::{Request as HttpRequest, StatusCode};
 use rate_limiter_aimd::{
+    Error as CrateError, // The Box<dyn Error...> from lib.rs
     adaptive_concurrency::{
         AdaptiveConcurrencySettings,
         AdaptiveConcurrencySettingsBuilder, // Assuming 'bon::Builder' derives this
@@ -9,13 +11,11 @@ use rate_limiter_aimd::{
         reqwest_integration::ReqwestService,
         retries::{RetryAction, RetryLogic},
     },
-    Error as CrateError, // The Box<dyn Error...> from lib.rs
 };
-use http::{Request as HttpRequest, StatusCode};
 use reqwest::Response as ReqwestResponse;
-use std::{borrow::Cow, time::Duration, env};
+use std::{borrow::Cow, env, time::Duration};
 use tokio::time::sleep;
-use tower::{ServiceBuilder, Service, ServiceExt}; // Added ServiceExt for .ready()
+use tower::{Service, ServiceBuilder, ServiceExt}; // Added ServiceExt for .ready()
 use tracing::info;
 
 // --- Configuration ---
@@ -31,25 +31,37 @@ struct OpenAIRetryLogic;
 
 impl RetryLogic for OpenAIRetryLogic {
     type Error = GenericHttpError; // Error type from our ReqwestService
-    type Response = ReqwestResponse;   // Response type from ReqwestService
+    type Response = ReqwestResponse; // Response type from ReqwestService
 
     fn is_retriable_error(&self, error: &Self::Error) -> bool {
         match error {
             GenericHttpError::Transport { .. } => {
-                info!("OpenAIRetryLogic: Retrying due to transport error: {:?}", error);
+                info!(
+                    "OpenAIRetryLogic: Retrying due to transport error: {:?}",
+                    error
+                );
                 true
-            },
+            }
             GenericHttpError::Timeout => {
-                info!("OpenAIRetryLogic: Retrying due to timeout error: {:?}", error);
+                info!(
+                    "OpenAIRetryLogic: Retrying due to timeout error: {:?}",
+                    error
+                );
                 true
-            },
+            }
             GenericHttpError::ServerError { status, .. } => {
                 let s = StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
                 if s.is_server_error() || s == StatusCode::TOO_MANY_REQUESTS {
-                    info!("OpenAIRetryLogic: Retrying due to server error status {}: {:?}", status, error);
+                    info!(
+                        "OpenAIRetryLogic: Retrying due to server error status {}: {:?}",
+                        status, error
+                    );
                     true
                 } else {
-                    info!("OpenAIRetryLogic: Not retrying server error status {}: {:?}", status, error);
+                    info!(
+                        "OpenAIRetryLogic: Not retrying server error status {}: {:?}",
+                        status, error
+                    );
                     false
                 }
             }
@@ -74,13 +86,19 @@ impl RetryLogic for OpenAIRetryLogic {
                 status
             )))
         } else if status.is_client_error() {
-            info!("OpenAIRetryLogic: Not retrying due to client error status: {}", status);
+            info!(
+                "OpenAIRetryLogic: Not retrying due to client error status: {}",
+                status
+            );
             RetryAction::DontRetry(Cow::Owned(format!(
                 "Server responded with client error status {}",
                 status
             )))
         } else {
-            info!("OpenAIRetryLogic: Not retrying due to unhandled status: {}", status);
+            info!(
+                "OpenAIRetryLogic: Not retrying due to unhandled status: {}",
+                status
+            );
             RetryAction::DontRetry(Cow::Owned(format!(
                 "Server responded with unhandled status {}",
                 status
@@ -89,18 +107,23 @@ impl RetryLogic for OpenAIRetryLogic {
     }
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     // --- Setup Tracing (optional, but good for observing limiter behavior) ---
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
+        )
         .init();
 
     // --- Load OpenAI API Key ---
     dotenvy::dotenv().ok(); // Load .env file if present
-    let api_key = env::var(OPENAI_API_KEY_ENV_VAR)
-        .map_err(|_| format!("Missing OpenAI API key environment variable: {}", OPENAI_API_KEY_ENV_VAR))?;
+    let api_key = env::var(OPENAI_API_KEY_ENV_VAR).map_err(|_| {
+        format!(
+            "Missing OpenAI API key environment variable: {}",
+            OPENAI_API_KEY_ENV_VAR
+        )
+    })?;
 
     // --- Create Reqwest Client and Service ---
     let reqwest_client = reqwest::Client::builder()
@@ -127,7 +150,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
     //     rtt_deviation_scale: 2.0, // default 2.5
     // };
 
-
     let openai_retry_logic = OpenAIRetryLogic::default();
 
     // --- Build the Tower Service Stack ---
@@ -153,7 +175,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         let key_clone = api_key.clone();
 
         let handle = tokio::spawn(async move {
-            info!("[Task {}] Preparing request to {}", i, OPENAI_LIST_MODELS_URL);
+            info!(
+                "[Task {}] Preparing request to {}",
+                i, OPENAI_LIST_MODELS_URL
+            );
 
             let http_request = HttpRequest::builder()
                 .method("GET")
@@ -166,18 +191,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
             info!("[Task {}] Waiting for service readiness...", i);
             // Ensure the service is ready before calling it.
             // This also allows the semaphore in AdaptiveConcurrencyLimit to be acquired.
-            cloned_service.ready().await.map_err(|e: CrateError| CrateError::from(format!("[Task {}] Service not ready: {:?}", i, e)))?;
-
+            cloned_service.ready().await.map_err(|e: CrateError| {
+                CrateError::from(format!("[Task {}] Service not ready: {:?}", i, e))
+            })?;
 
             info!("[Task {}] Calling service...", i);
             match cloned_service.call(http_request).await {
                 Ok(response) => {
                     let status = response.status();
-                    let response_body = response.text().await.unwrap_or_else(|_| String::from("Error reading response body"));
+                    let response_body = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| String::from("Error reading response body"));
                     if status.is_success() {
-                        info!("[Task {}] SUCCESS: Status {}, Body: {:.100}...", i, status, response_body);
+                        info!(
+                            "[Task {}] SUCCESS: Status {}, Body: {:.100}...",
+                            i, status, response_body
+                        );
                     } else {
-                        info!("[Task {}] API_ERROR: Status {}, Body: {}", i, status, response_body);
+                        info!(
+                            "[Task {}] API_ERROR: Status {}, Body: {}",
+                            i, status, response_body
+                        );
                     }
                 }
                 Err(e) => {
