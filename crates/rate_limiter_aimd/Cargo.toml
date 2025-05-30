@@ -7,7 +7,7 @@ homepage = "https://github.com/TwistingTwists/rate_limiter_aimd"
 repository = "https://github.com/TwistingTwists/rate_limiter_aimd"
 license = "MIT"
 keywords = ["concurrency", "rate-limiting", "networking", "async", "tokio"]
-categories = ["async", "algorithms", "network-programming"]
+categories = ["concurrency", "algorithms", "network-programming"]
 readme = "README.md"
 authors = ["Abhishek Tripathi <abhishek.tripathi456@gmail.com>"]
 
