@@ -39,3 +39,4 @@ tracing-subscriber = { workspace = true }
 dotenvy = {workspace = true}
 tracing-appender = {workspace = true}
 bytes = { workspace = true }
+ordered-float = "5.0.0"
