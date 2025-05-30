@@ -1,5 +1,6 @@
 [workspace]
-members = [ "crates/openai_client","crates/rate_limiter_aimd"]
+members = [ "crates/gemini_client", "crates/openai_client","crates/rate_limiter_aimd"]
+resolver = "3"
 
 [workspace.dependencies]
 # own crates 

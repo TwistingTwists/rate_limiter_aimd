@@ -92,6 +92,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.88"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e539d3fca749fcee5236ab05e93a52867dd549cc157c8cb7f99595f3cedffdb5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -494,6 +505,36 @@ dependencies = [
  "pin-project-lite",
  "pin-utils",
  "slab",
+]
+
+[[package]]
+name = "gemini_client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "dotenvy",
+ "futures",
+ "http",
+ "hyper",
+ "metrics",
+ "metrics-tracing-context",
+ "metrics-util",
+ "paste",
+ "pin-project",
+ "rand 0.9.1",
+ "rate_limiter_aimd",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "snafu",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tower 0.4.13",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
