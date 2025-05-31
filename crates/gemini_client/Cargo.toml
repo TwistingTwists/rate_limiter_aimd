@@ -1,0 +1,37 @@
+[package]
+name = "gemini_client"
+version = "0.1.0"
+edition = "2024"
+
+# Workspace dependencies
+[dependencies]
+rate_limiter_aimd = { workspace = true }
+
+# Common dependencies (mirroring openai_client and workspace)
+futures = { workspace = true }
+pin-project = { workspace = true }
+rand = { workspace = true } # For retry jitter, if needed
+serde = { workspace = true, features = ["derive"] }
+snafu = { workspace = true }
+tokio = { workspace = true, features = ["full"] } # "full" for examples, consider "macros", "rt-multi-thread" for lib
+tower = { workspace = true, features = ["util", "retry", "limit"] } # Add features as needed
+paste = { workspace = true }
+tracing = { workspace = true }
+metrics = { workspace = true }
+metrics-tracing-context = { workspace = true }
+metrics-util = { workspace = true }
+hyper = { workspace = true } # If building HTTP requests manually or for types
+serde_json = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+http = { workspace = true }
+bytes = { workspace = true }
+async-trait = "0.1" # For service traits if needed
+url = "2.5" # For URL construction/parsing
+thiserror = "1.0" # Alternative for error handling, though snafu is in workspace
+dotenvy = { workspace = true } # For examples
+tracing-subscriber = { workspace = true, features = ["env-filter"] } # For examples
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+# Add other dev-dependencies as needed, e.g., for testing specific API responses
+# mockito = "0.31" # If you plan to use HTTP mocking for tests

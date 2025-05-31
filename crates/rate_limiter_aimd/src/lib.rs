@@ -1,4 +1,6 @@
 pub mod adaptive_concurrency;
+#[cfg(test)]
+pub mod test_utils;
 
 #[macro_use]
 extern crate tracing;

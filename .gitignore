@@ -3,3 +3,5 @@ memories/
 .aider*
 
 prompt.md
+.env
+logs/

@@ -18,16 +18,16 @@ use crate::{
 use tracing::instrument;
 
 use super::{
-    retries::ExponentialBackoff,
     AdaptiveConcurrencySettings,
     http::HttpError,
     instant_now,
+    retries::ExponentialBackoff,
     retries::{RetryAction, RetryLogic},
     semaphore::ShrinkableSemaphore,
     stats::{EwmaVar, Mean, MeanVariance},
 };
-// #[cfg(test)]
-// use crate::test_util::stats::{TimeHistogram, TimeWeightedSum};
+#[cfg(test)]
+use crate::test_utils::stats::{TimeHistogram, TimeWeightedSum};
 // use crate::{
 //     http::HttpError,
 //     internal_events::{
@@ -47,8 +47,8 @@ pub(super) struct Controller<L> {
     settings: AdaptiveConcurrencySettings,
     logic: L,
     pub(super) inner: Arc<Mutex<Inner>>,
-    // #[cfg(test)]
-    // pub(super) stats: Arc<Mutex<ControllerStatistics>>,
+    #[cfg(test)]
+    pub(super) stats: Arc<Mutex<ControllerStatistics>>,
     limit: Registered<AdaptiveConcurrencyLimit>,
     in_flight: Registered<AdaptiveConcurrencyInFlight>,
     observed_rtt: Registered<AdaptiveConcurrencyObservedRtt>,
@@ -66,14 +66,14 @@ pub(super) struct Inner {
     reached_limit: bool,
 }
 
-// #[cfg(test)]
-// #[derive(Debug, Default)]
-// pub(super) struct ControllerStatistics {
-//     pub(super) in_flight: TimeHistogram,
-//     pub(super) concurrency_limit: TimeHistogram,
-//     pub(super) observed_rtt: TimeWeightedSum,
-//     pub(super) averaged_rtt: TimeWeightedSum,
-// }
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(super) struct ControllerStatistics {
+    pub(super) in_flight: TimeHistogram,
+    pub(super) concurrency_limit: TimeHistogram,
+    pub(super) observed_rtt: TimeWeightedSum,
+    pub(super) averaged_rtt: TimeWeightedSum,
+}
 
 impl<L> Controller<L> {
     pub(super) fn new(
@@ -100,8 +100,8 @@ impl<L> Controller<L> {
                 had_back_pressure: false,
                 reached_limit: false,
             })),
-            // #[cfg(test)]
-            // stats: Arc::new(Mutex::new(ControllerStatistics::default())),
+            #[cfg(test)]
+            stats: Arc::new(Mutex::new(ControllerStatistics::default())),
             limit: register!(AdaptiveConcurrencyLimit),
             in_flight: register!(AdaptiveConcurrencyInFlight),
             observed_rtt: register!(AdaptiveConcurrencyObservedRtt),
@@ -128,11 +128,11 @@ impl<L> Controller<L> {
     pub(super) fn start_request(&self) {
         let mut inner = self.inner.lock().expect("Controller mutex is poisoned");
 
-        // #[cfg(test)]
-        // {
-        //     let mut stats = self.stats.lock().expect("Stats mutex is poisoned");
-        //     stats.in_flight.add(inner.in_flight, instant_now());
-        // }
+        #[cfg(test)]
+        {
+            let mut stats = self.stats.lock().expect("Stats mutex is poisoned");
+            stats.in_flight.add(inner.in_flight, instant_now());
+        }
 
         inner.in_flight += 1;
         if inner.in_flight >= inner.current_limit {
@@ -159,16 +159,16 @@ impl<L> Controller<L> {
             inner.had_back_pressure = true;
         }
 
-        // #[cfg(test)]
-        // let mut stats = self.stats.lock().expect("Stats mutex is poisoned");
+        #[cfg(test)]
+        let mut stats = self.stats.lock().expect("Stats mutex is poisoned");
 
-        // #[cfg(test)]
-        // {
-        //     if use_rtt {
-        //         stats.observed_rtt.add(rtt, now);
-        //     }
-        //     stats.in_flight.add(inner.in_flight, now);
-        // }
+        #[cfg(test)]
+        {
+            if use_rtt {
+                stats.observed_rtt.add(rtt, now);
+            }
+            stats.in_flight.add(inner.in_flight, now);
+        }
 
         inner.in_flight -= 1;
         self.in_flight.emit(inner.in_flight as u64);
@@ -302,7 +302,7 @@ where
     //     }
     // }
 
-    #[instrument(skip(self))]
+    // #[instrument(skip(self))]
     pub(super) fn adjust_to_response(
         &self,
         start: Instant,

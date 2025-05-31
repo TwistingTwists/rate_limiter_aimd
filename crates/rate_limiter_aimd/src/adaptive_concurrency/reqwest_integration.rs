@@ -8,6 +8,7 @@ use futures::future::BoxFuture; // Optional: use if converting reqwest::Error to
 // Let's assume it's defined elsewhere (e.g., in retries.rs as previously discussed) for better separation.
 // use super::retries::DefaultReqwestRetryLogic;
 
+use bytes::Bytes;
 use http::{Request as HttpRequest, StatusCode};
 use reqwest;
 use std::future::Future;
@@ -16,7 +17,7 @@ use std::task::{Context, Poll};
 use tower::Service;
 
 /// A `tower::Service` wrapper for `reqwest::Client`.
-/// Accepts `http::Request<Option<reqwest::Body>>`.
+/// Accepts `http::Request<Option<bytes::Bytes>>`.
 #[derive(Clone)]
 pub struct ReqwestService {
     client: reqwest::Client,
@@ -40,7 +41,7 @@ impl Default for ReqwestService {
     }
 }
 
-impl Service<HttpRequest<Option<reqwest::Body>>> for ReqwestService {
+impl Service<HttpRequest<Option<Bytes>>> for ReqwestService {
     type Response = reqwest::Response;
     // The error type for this service.
     // GenericHttpError will be converted Into<CrateError>.
@@ -51,7 +52,7 @@ impl Service<HttpRequest<Option<reqwest::Body>>> for ReqwestService {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, http_request: HttpRequest<Option<reqwest::Body>>) -> Self::Future {
+    fn call(&mut self, http_request: HttpRequest<Option<Bytes>>) -> Self::Future {
         let (parts, body_option) = http_request.into_parts();
 
         let url_str = parts.uri.to_string();
@@ -71,8 +72,9 @@ impl Service<HttpRequest<Option<reqwest::Body>>> for ReqwestService {
             request_builder = request_builder.header(header_name, header_value);
         }
 
-        if let Some(body) = body_option {
-            request_builder = request_builder.body(body);
+        if let Some(bytes_body) = body_option {
+            let reqwest_body = reqwest::Body::from(bytes_body);
+            request_builder = request_builder.body(reqwest_body);
         }
 
         let request_future = request_builder.send();

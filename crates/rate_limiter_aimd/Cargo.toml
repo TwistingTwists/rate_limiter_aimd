@@ -1,0 +1,42 @@
+[package]
+name = "rate_limiter_aimd"
+version = "0.1.0"
+edition = "2024"
+description = "A Rust library for adaptive concurrency control based on network service feedback (forked from vector.dev)"
+homepage = "https://github.com/TwistingTwists/rate_limiter_aimd"
+repository = "https://github.com/TwistingTwists/rate_limiter_aimd"
+license = "MIT"
+keywords = ["concurrency", "rate-limiting", "networking", "async", "tokio"]
+categories = ["concurrency", "algorithms", "network-programming"]
+readme = "README.md"
+authors = ["Abhishek Tripathi <abhishek.tripathi456@gmail.com>"]
+
+[dependencies]
+futures = {workspace = true}
+pin-project = {workspace = true}
+rand = {workspace = true}
+serde = { workspace = true }
+snafu = { workspace = true }
+tokio = { workspace = true }
+tokio-test = {workspace = true}
+tower = { workspace = true }
+tower-http = {workspace = true}
+tower-test = {workspace = true}
+paste = {workspace = true}
+
+
+tracing = {workspace = true}
+
+metrics = {workspace = true}
+metrics-tracing-context = {workspace = true}
+metrics-util = {workspace = true}
+hyper = {workspace = true}
+serde_json = {workspace = true}
+reqwest = { workspace = true }
+http = { workspace = true }
+bon = {workspace = true}
+tracing-subscriber = { workspace = true }
+dotenvy = {workspace = true}
+tracing-appender = {workspace = true}
+bytes = { workspace = true }
+ordered-float = "5.0.0"

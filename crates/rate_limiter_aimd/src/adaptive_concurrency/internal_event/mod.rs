@@ -289,3 +289,13 @@ macro_rules! register {
         crate::adaptive_concurrency::internal_event::register($event)
     };
 }
+
+#[macro_export]
+macro_rules! assert_downcast_matches {
+    ($e:expr, $t:ty, $v:pat) => {{
+        match $e.downcast_ref::<$t>() {
+            Some($v) => (),
+            got => panic!("Assertion failed: got wrong error variant {:?}", got),
+        }
+    }};
+}
