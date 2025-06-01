@@ -30,73 +30,155 @@ use bon::Builder;
 // various responses to load. The values are the best balances found between competing outcomes.
 #[derive(Clone, Copy, Debug, Builder)]
 // #[serde(deny_unknown_fields)]
+/// Configuration settings for the AIMD (Additive Increase/Multiplicative Decrease) 
+/// adaptive concurrency control algorithm.
+/// 
+/// This struct provides various configuration options to tune the behavior of the 
+/// adaptive concurrency limiter. The algorithm adjusts the number of concurrent requests
+/// based on response latencies and errors, using an AIMD approach similar to TCP congestion control.
+/// 
+/// # Configuration Parameters
+/// 
+/// Since all fields are private, configuration must be done through the builder pattern.
+/// The following table summarizes available parameters:
+/// 
+/// | Parameter | Default | Description |
+/// |-----------|---------|-------------|
+/// | `initial_concurrency` | 1 | Starting number of concurrent requests<br>**Recommendations**: Set to service's average concurrency limit<br>Higher = faster ramp-up but riskier<br>Lower = safer cold-start but underutilized |
+/// | `decrease_ratio` | 0.9 | Multiplicative decrease factor on congestion<br>**Range**: 0-1<br>**Trade-offs**:<br>- Higher (0.95) = gentler backoffs<br>- Lower (0.7) = faster congestion recovery |
+/// | `ewma_alpha` | 0.4 | Smoothing factor for latency measurements<br>**Formula**: `new_avg = alpha*current + (1-alpha)*prev`<br>**Range**: 0-1<br>**Recommendations**:<br>- Increase for bursty workloads<br>- Decrease for stable services |
+/// | `rtt_deviation_scale` | 2.5 | Multiplier for abnormal latency threshold<br>**Formula**: `threshold = avg + scale*deviation`<br>**Range**: ≥0 (1.0-3.0 typical)<br>**Tuning**:<br>- Higher = fewer false positives<br>- Lower = more sensitive to fluctuations |
+/// | `max_concurrency_limit` | 200 | Upper bound for concurrency<br>**Considerations**:<br>- Set to service's max safe capacity<br>- Too low = caps performance<br>- Too high = risk of cascading failures |
+/// 
+/// # Example
+/// 
+/// ```rust
+/// use rate_limiter_aimd::adaptive_concurrency::AdaptiveConcurrencySettings;
+/// 
+/// // Create settings with custom values
+/// let settings = AdaptiveConcurrencySettings::builder()
+///     .initial_concurrency(10)
+///     .decrease_ratio(0.8)
+///     .max_concurrency_limit(500)
+///     .build();
+/// ```
 pub struct AdaptiveConcurrencySettings {
-    /// The initial concurrency limit to use. If not specified, the initial limit is 1 (no concurrency).
+    /// The starting number of concurrent requests allowed.
     ///
-    /// Datadog recommends setting this value to your service's average limit if you're seeing that it takes a
-    /// long time to ramp up adaptive concurrency after a restart. You can find this value by looking at the
-    /// `adaptive_concurrency_limit` metric.
-    // #[serde(default = "default_initial_concurrency")]
+    /// This is the concurrency limit when the algorithm starts. The AIMD algorithm will
+    /// adjust this value up or down based on observed performance.
+    ///
+    /// **Default**: 1 (single request at a time)
+    ///
+    /// # Recommendations
+    /// - Set to your service's average concurrency limit if known
+    /// - Higher values speed up initial ramp-up but risk overloading new deployments
+    /// - Lower values provide safer cold-start but may underutilize resources initially
     #[builder(default)]
     pub(super) initial_concurrency: usize,
 
-    /// The fraction of the current value to set the new concurrency limit when decreasing the limit.
+    /// Multiplicative decrease factor applied when congestion is detected.
     ///
-    /// Valid values are greater than `0` and less than `1`. Smaller values cause the algorithm to scale back rapidly
-    /// when latency increases.
+    /// When error rates exceed thresholds or latency spikes occur, the current concurrency
+    /// limit is multiplied by this value to reduce load.
     ///
-    /// **Note**: The new limit is rounded down after applying this ratio.
-    // #[serde(default = "default_decrease_ratio")]
+    /// **Default**: 0.9 (10% decrease)
+    /// **Range**: 0 < decrease_ratio < 1
+    ///
+    /// # Trade-offs
+    /// - Higher values (0.95) = gentler backoffs but slower recovery from congestion
+    /// - Lower values (0.7) = aggressive backoffs but faster congestion recovery
     #[builder(default)]
     pub(super) decrease_ratio: f64,
 
-    /// The weighting of new measurements compared to older measurements.
+    /// Smoothing factor for latency measurements (EWMA).
     ///
-    /// Valid values are greater than `0` and less than `1`.
+    /// Controls how quickly the algorithm forgets old latency measurements:
+    /// - Higher alpha = more responsive to recent changes
+    /// - Lower alpha = more stable but slower to adapt
     ///
-    /// ARC uses an exponentially weighted moving average (EWMA) of past RTT measurements as a reference to compare with
-    /// the current RTT. Smaller values cause this reference to adjust more slowly, which may be useful if a service has
-    /// unusually high response variability.
-    // #[serde(default = "default_ewma_alpha")]
+    /// **Default**: 0.4
+    /// **Range**: 0 < ewma_alpha < 1
+    ///
+    /// # Formula
+    /// `new_avg = (alpha * current) + ((1 - alpha) * previous_avg)`
+    ///
+    /// # Recommendations
+    /// - Increase for bursty workloads with rapid latency changes
+    /// - Decrease for stable services with predictable latency
     #[builder(default)]
     pub(super) ewma_alpha: f64,
 
-    /// Scale of RTT deviations which are not considered anomalous.
+    /// Multiplier for determining abnormal latency deviations.
     ///
-    /// Valid values are greater than or equal to `0`, and we expect reasonable values to range from `1.0` to `3.0`.
+    /// Used to compute the threshold for latency anomalies:
+    /// `threshold = avg_latency + (rtt_deviation_scale * deviation)`
     ///
-    /// When calculating the past RTT average, we also compute a secondary “deviation” value that indicates how variable
-    /// those values are. We use that deviation when comparing the past RTT average to the current measurements, so we
-    /// can ignore increases in RTT that are within an expected range. This factor is used to scale up the deviation to
-    /// an appropriate range.  Larger values cause the algorithm to ignore larger increases in the RTT.
-    //  #[serde(default = "default_rtt_deviation_scale")]
+    /// Responses exceeding this threshold are considered congestion signals.
+    ///
+    /// **Default**: 2.5
+    /// **Range**: ≥0 (typically 1.0-3.0)
+    ///
+    /// # Tuning
+    /// - Higher values = fewer false positives (missed congestion signals)
+    /// - Lower values = more sensitive to latency fluctuations (potential false alarms)
     #[builder(default)]
     pub(super) rtt_deviation_scale: f64,
 
-    /// The maximum concurrency limit.
+    /// Upper bound for the concurrency limit.
     ///
-    /// The adaptive request concurrency limit does not go above this bound. This is put in place as a safeguard.
-    // #[serde(default = "default_max_concurrency_limit")]
+    /// Prevents unbounded growth that could overwhelm downstream services.
+    ///
+    /// **Default**: 200
+    ///
+    /// # Considerations
+    /// - Should be set to your service's maximum safe capacity
+    /// - Acts as a circuit-breaker for runaway concurrency
+    /// - Too low: artificially caps performance
+    /// - Too high: risks cascading failures during traffic surges
     #[builder(default)]
     pub(super) max_concurrency_limit: usize,
 }
 
+/// Returns the default initial concurrency value (1).
+/// 
+/// This is used when no custom value is specified in the settings builder.
 const fn default_initial_concurrency() -> usize {
     1
 }
 
+/// Returns the default decrease ratio (0.9).
+/// 
+/// This controls how aggressively the concurrency limit is reduced when congestion is detected.
+/// A value of 0.9 means the limit will be reduced to 90% of its current value (a 10% decrease).
 const fn default_decrease_ratio() -> f64 {
     0.9
 }
 
+/// Returns the default EWMA (Exponentially Weighted Moving Average) alpha value (0.4).
+/// 
+/// This controls the smoothing factor for latency measurements. A higher value gives more weight
+/// to recent measurements, while a lower value gives more weight to historical data.
+/// 
+/// The value should be between 0 and 1. The default of 0.4 provides a balance between
+/// responsiveness to recent changes and stability from historical data.
 const fn default_ewma_alpha() -> f64 {
     0.4
 }
 
+/// Returns the default RTT (Round Trip Time) deviation scale factor (2.5).
+/// 
+/// This is used to determine when latency variance is high enough to indicate congestion.
+/// A higher value makes the algorithm less sensitive to latency variations, while a lower
+/// value makes it more sensitive.
 const fn default_rtt_deviation_scale() -> f64 {
     2.5
 }
 
+/// Returns the default maximum concurrency limit (200).
+/// 
+/// This sets an upper bound on the concurrency level that the algorithm can reach.
+/// It prevents unbounded growth in cases where the system appears to handle higher loads.
 const fn default_max_concurrency_limit() -> usize {
     200
 }

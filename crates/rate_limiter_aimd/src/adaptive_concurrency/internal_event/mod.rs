@@ -29,19 +29,66 @@ pub use adaptive_concurrency::*;
 
 // use crate::json_size::JsonSize;
 
+/// Represents an internal event that can be emitted by the adaptive concurrency system.
+/// 
+/// This trait is used for instrumentation and monitoring of the AIMD algorithm's behavior.
+/// Implementations should emit events that can be collected for metrics, logging, or tracing.
+/// 
+/// # Example
+/// ```rust
+/// use rate_limiter_aimd::adaptive_concurrency::internal_event::InternalEvent;
+/// 
+/// struct MyEvent;
+/// 
+/// impl InternalEvent for MyEvent {
+///     fn emit(self) {
+///         // Record the event in your metrics system
+///         println!("Internal event occurred");
+///     }
+///     
+///     fn name(&self) -> Option<&'static str> {
+///         Some("my_event")
+///     }
+/// }
+/// ```
 pub trait InternalEvent: Sized {
+    /// Emit this event.
+    /// 
+    /// This method takes ownership of `self` to allow for event types that carry data.
     fn emit(self);
 
     // Optional for backwards compat until all events implement this
+    /// Get the name of this event type, if available.
+    /// 
+    /// This is optional for backwards compatibility. Event implementations should provide
+    /// a name when possible to aid in metrics categorization and debugging.
+    /// 
+    /// # Returns
+    /// An optional static string representing the event name
+    /// Get the name of the event being registered, if available.
+    /// 
+    /// This can be used for event categorization or debugging purposes.
+    /// 
+    /// # Returns
+    /// An optional static string representing the event name
     fn name(&self) -> Option<&'static str> {
         None
     }
 }
 
 #[allow(clippy::module_name_repetitions)]
+/// Trait for types that can register internal events.
+/// 
+/// This provides a way to register events while potentially maintaining
+/// context or configuration needed for event emission.
 pub trait RegisterInternalEvent: Sized {
+    /// The handle type that will be returned after registration
     type Handle: InternalEventHandle;
 
+    /// Register an event, returning a handle that can be used to emit it.
+    /// 
+    /// # Returns
+    /// A handle implementing `InternalEventHandle` that can be used to emit the event
     fn register(self) -> Self::Handle;
 
     fn name(&self) -> Option<&'static str> {

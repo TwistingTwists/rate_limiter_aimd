@@ -24,20 +24,62 @@ pub enum RetryAction {
     Successful,
 }
 
+/// Defines the contract for determining which requests should be retried.
+/// 
+/// Implementers must specify:
+/// - Which error types are retriable
+/// - Whether a successful response requires additional retries
+/// 
+/// # Example
+/// ```rust
+/// use std::error::Error;
+/// use rate_limiter_aimd::adaptive_concurrency::retries::RetryLogic;
+/// 
+/// #[derive(Clone)]
+/// struct MyRetryLogic;
+/// 
+/// impl RetryLogic for MyRetryLogic {
+///     type Error = Box<dyn Error + Send + Sync + 'static>;
+///     type Response = String;
+/// 
+///     fn is_retriable_error(&self, error: &Self::Error) -> bool {
+///         // Retry on timeout errors
+///         error.to_string().contains("timeout")
+///     }
+/// 
+///     fn should_retry_response(&self, response: &Self::Response) -> bool {
+///         // Retry if response contains specific retry token
+///         response.contains("retry-me")
+///     }
+/// }
+/// ```
 pub trait RetryLogic: Clone + Send + Sync + 'static {
+    /// The type of errors produced by the service
     type Error: std::error::Error + Send + Sync + 'static;
+    
+    /// The type of successful responses from the service
     type Response;
 
-    /// When the Service call returns an `Err` response, this function allows
-    /// implementors to specify what kinds of errors can be retried.
+    /// Determines if an error should trigger a retry.
+    /// 
+    /// # Parameters
+    /// - `error`: The error that occurred during the service call
+    /// 
+    /// # Returns
+    /// `true` if the error is retriable, `false` otherwise
     fn is_retriable_error(&self, error: &Self::Error) -> bool;
 
-    /// When the Service call returns an `Ok` response, this function allows
-    /// implementors to specify additional logic to determine if the success response
-    /// is actually an error. This is particularly useful when the downstream service
-    /// of a sink returns a transport protocol layer success but error data in the
-    /// response body. For example, an HTTP 200 status, but the body of the response
-    /// contains a list of errors encountered while processing.
+    /// Determines if a successful response should trigger a retry.
+    /// 
+    /// # Parameters
+    /// - `response`: The successful response from the service
+    /// 
+    /// # Returns
+    /// A `RetryAction` indicating whether the response should be retried
+    /// 
+    /// # Note
+    /// This is optional and defaults to `RetryAction::Successful` for backward compatibility.
+    /// Implementers should override this only when success responses can indicate retry needs.
     fn should_retry_response(&self, _response: &Self::Response) -> RetryAction {
         // Treat the default as the request is successful
         RetryAction::Successful
